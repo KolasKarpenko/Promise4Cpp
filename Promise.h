@@ -25,10 +25,8 @@ public:
 		switch (m_state)
 		{
 		case State::Pending:
-		{
 			m_handlers.push_back(std::make_pair(resolve, reject));
-		}
-		break;
+			break;
 		case State::Resolved:
 			resolve(m_result);
 			break;
