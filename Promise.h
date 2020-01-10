@@ -4,6 +4,7 @@
 #include <vector>
 #include <functional>
 #include <mutex>
+#include <thread>
 
 template<typename TResult>
 class Promise
@@ -15,14 +16,7 @@ public:
 	typedef std::function<void(const OnResolveFunc & resolve, const OnRejectFunc & reject)> PromiseFunc;
 	typedef std::shared_ptr<Promise<TResult>> PromisePtr;
 
-	Promise() = delete;
 	Promise(const Promise&) = delete;
-
-	static PromisePtr Create(const PromiseFunc& impl)
-	{
-		PromisePtr ptr(new Promise(impl));
-		return ptr;
-	}
 
 	void Then(const OnResolveFunc& resolve, const OnRejectFunc& reject)
 	{
@@ -46,7 +40,7 @@ public:
 		}
 	}
 
-private:
+protected:
 	enum class State
 	{
 		Pending = 0,
@@ -54,12 +48,8 @@ private:
 		Rejected
 	};
 
-	Promise(const PromiseFunc& impl) : m_state(State::Pending)
+	Promise() : m_state(State::Pending)
 	{
-		impl(
-			[this](const TResult& result) { Resolve(result); },
-			[this](const TError& error) { Reject(error); }
-		);
 	}
 
 	void Resolve(const TResult& result) {
@@ -95,4 +85,53 @@ private:
 	TError m_error;
 	std::vector<std::pair<OnResolveFunc, OnRejectFunc>> m_handlers;
 	std::mutex m_mutex;
+};
+
+template<typename TResult>
+class SyncPromise : public Promise<TResult>
+{
+public:
+	static Promise<TResult>::PromisePtr Create(const PromiseFunc& impl)
+	{
+		Promise<TResult>::PromisePtr ptr(new SyncPromise(impl));
+		return ptr;
+	}
+
+protected:
+	SyncPromise(const PromiseFunc& impl) : Promise<TResult>()
+	{
+		impl(
+			[this](const TResult& result) { Resolve(result); },
+			[this](const TError& error) { Reject(error); }
+		);
+	}
+};
+
+template<typename TResult>
+class AsyncPromise : public Promise<TResult>
+{
+public:
+	static Promise<TResult>::PromisePtr Create(const PromiseFunc& impl)
+	{
+		Promise<TResult>::PromisePtr ptr(new AsyncPromise(impl));
+		return ptr;
+	}
+
+	~AsyncPromise()
+	{
+		m_thread.join();
+	}
+
+protected:
+	AsyncPromise(const PromiseFunc& impl)
+		: Promise<TResult>(),
+		m_thread(impl,
+			[this](const TResult& result) { Resolve(result); },
+			[this](const TError& error) { Reject(error); }
+		)
+	{
+	}
+
+private:
+	std::thread m_thread;
 };
