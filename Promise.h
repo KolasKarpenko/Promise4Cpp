@@ -5,18 +5,20 @@
 #include <functional>
 #include <mutex>
 #include <thread>
+#include <atomic>
+#include <chrono>
 
 template<typename TResult>
-class Promise
+class IPromise
 {
 public:
 	typedef std::string TError;
 	typedef std::function<void(const TResult & result)> OnResolveFunc;
 	typedef std::function<void(const TError & error)> OnRejectFunc;
 	typedef std::function<void(const OnResolveFunc & resolve, const OnRejectFunc & reject)> PromiseFunc;
-	typedef std::shared_ptr<Promise<TResult>> PromisePtr;
+	typedef std::shared_ptr<IPromise<TResult>> PromisePtr;
 
-	Promise(const Promise&) = delete;
+	IPromise(const IPromise&) = delete;
 
 	void Then(const OnResolveFunc& resolve, const OnRejectFunc& reject)
 	{
@@ -38,6 +40,30 @@ public:
 		}
 	}
 
+	bool Result(TResult& result, TError& error)
+	{
+		std::atomic<bool> resolved = false;
+		std::atomic<bool> ok = true;
+
+		Then(
+			[&result, &resolved](const TResult& value) {
+				result = value;
+				resolved = true;
+			},
+			[&error, &resolved, &ok](const TError& value) {
+				error = value;
+				resolved = true;
+				ok = false;
+			}
+		);
+
+		while (!resolved) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+
+		return ok;
+	}
+
 protected:
 	enum class State
 	{
@@ -46,7 +72,7 @@ protected:
 		Rejected
 	};
 
-	Promise() : m_state(State::Pending)
+	IPromise() : m_state(State::Pending)
 	{
 	}
 
@@ -86,17 +112,44 @@ protected:
 };
 
 template<typename TResult>
-class SyncPromise : public Promise<TResult>
+class Promise : public IPromise<TResult>
 {
-public:
-	static Promise<TResult>::PromisePtr Create(const PromiseFunc& impl)
+private:
+	class Async : public IPromise<TResult>
 	{
-		Promise<TResult>::PromisePtr ptr(new SyncPromise(impl));
+	public:
+		Async(const PromiseFunc& impl)
+			: IPromise<TResult>(),
+			m_thread(impl,
+				[this](const TResult& result) { Resolve(result); },
+				[this](const TError& error) { Reject(error); }
+			)
+		{
+		}
+
+		~Async()
+		{
+			m_thread.join();
+		}
+	private:
+		std::thread m_thread;
+	};
+
+public:
+	static PromisePtr Create(const PromiseFunc& impl)
+	{
+		IPromise<TResult>::PromisePtr ptr(new Promise(impl));
 		return ptr;
 	}
 
-protected:
-	SyncPromise(const PromiseFunc& impl) : Promise<TResult>()
+	static PromisePtr CreateAsync(const PromiseFunc& impl)
+	{
+		IPromise<TResult>::PromisePtr ptr(new Async(impl));
+		return ptr;
+	}
+
+private:
+	Promise(const PromiseFunc& impl) : IPromise<TResult>()
 	{
 		impl(
 			[this](const TResult& result) { Resolve(result); },
@@ -105,31 +158,3 @@ protected:
 	}
 };
 
-template<typename TResult>
-class AsyncPromise : public Promise<TResult>
-{
-public:
-	static Promise<TResult>::PromisePtr Create(const PromiseFunc& impl)
-	{
-		Promise<TResult>::PromisePtr ptr(new AsyncPromise(impl));
-		return ptr;
-	}
-
-	~AsyncPromise()
-	{
-		m_thread.join();
-	}
-
-protected:
-	AsyncPromise(const PromiseFunc& impl)
-		: Promise<TResult>(),
-		m_thread(impl,
-			[this](const TResult& result) { Resolve(result); },
-			[this](const TError& error) { Reject(error); }
-		)
-	{
-	}
-
-private:
-	std::thread m_thread;
-};
