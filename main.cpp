@@ -32,4 +32,19 @@ int main()
 			std::cout << error << "\n";
 		}
 	);
+
+	auto all = Promise<std::string>::All({ sync, async });
+
+	all->Then(
+		[](const std::vector<std::string>& result) {
+			for (const auto& r : result) {
+				std::cout << r << " all in thread id " << std::this_thread::get_id() << "\n";
+			}
+		},
+			[](const std::string& error) {
+			std::cout << error << "\n";
+		}
+	);
+
+	IPromise::WaitForFinished();
 }

@@ -1,24 +1,89 @@
 #pragma once
 
+#include <cassert>
 #include <string>
 #include <vector>
+#include <map>
 #include <functional>
 #include <mutex>
 #include <thread>
 #include <atomic>
 #include <chrono>
 
-template<typename TResult>
 class IPromise
+{
+public:
+	typedef std::shared_ptr<IPromise> PromisePtr;
+
+	IPromise(const IPromise&) = delete;
+
+	virtual ~IPromise()
+	{
+	}
+
+	virtual void Run() = 0;
+
+	static void WaitForFinished()
+	{
+		while (true) {
+			{
+				std::lock_guard<std::mutex> lock(ms_poolMutex);
+				if (ms_pool.empty()) {
+					break;
+				}
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+	}
+
+protected:
+	enum class State
+	{
+		Pending = 0,
+		Resolved,
+		Rejected
+	};
+
+	IPromise() : m_state(State::Pending)
+	{
+		static size_t lastId = 0;
+		m_id = lastId++;
+	}
+
+	static void PushPull(const PromisePtr& p)
+	{
+		assert(p);
+		{
+			std::lock_guard<std::mutex> lock(ms_poolMutex);
+			ms_pool.insert(std::make_pair(p->m_id, p));
+		}
+		p->Run();
+	}
+
+	static void PopPull(size_t id)
+	{
+		std::lock_guard<std::mutex> lock(ms_poolMutex);
+		ms_pool.erase(id);
+	}
+
+	State m_state;
+	size_t m_id;
+	static std::mutex ms_poolMutex;
+	static std::map<size_t, PromisePtr> ms_pool;
+};
+
+std::mutex IPromise::ms_poolMutex;
+std::map<size_t, IPromise::PromisePtr> IPromise::ms_pool;
+
+template<typename TResult>
+class TPromise : public IPromise
 {
 public:
 	typedef std::string TError;
 	typedef std::function<void(const TResult & result)> OnResolveFunc;
 	typedef std::function<void(const TError & error)> OnRejectFunc;
 	typedef std::function<void(const OnResolveFunc & resolve, const OnRejectFunc & reject)> PromiseFunc;
-	typedef std::shared_ptr<IPromise<TResult>> PromisePtr;
-
-	IPromise(const IPromise&) = delete;
+	typedef std::shared_ptr<TPromise<TResult>> PromisePtr;
 
 	void Then(const OnResolveFunc& resolve, const OnRejectFunc& reject)
 	{
@@ -65,14 +130,7 @@ public:
 	}
 
 protected:
-	enum class State
-	{
-		Pending = 0,
-		Resolved,
-		Rejected
-	};
-
-	IPromise() : m_state(State::Pending)
+	TPromise(const PromiseFunc& impl) : IPromise(), m_impl(impl)
 	{
 	}
 
@@ -88,6 +146,8 @@ protected:
 		for (const auto& cb : m_handlers) {
 			cb.first(m_result);
 		}
+
+		PopPull(m_id);
 	}
 
 	void Reject(const TError& error) {
@@ -102,9 +162,11 @@ protected:
 		for (const auto& cb : m_handlers) {
 			cb.second(m_error);
 		}
+
+		PopPull(m_id);
 	}
 
-	State m_state;
+	PromiseFunc m_impl;
 	TResult m_result;
 	TError m_error;
 	std::vector<std::pair<OnResolveFunc, OnRejectFunc>> m_handlers;
@@ -112,19 +174,23 @@ protected:
 };
 
 template<typename TResult>
-class Promise : public IPromise<TResult>
+class Promise : public TPromise<TResult>
 {
 private:
-	class Async : public IPromise<TResult>
+	class Async : public TPromise<TResult>
 	{
 	public:
 		Async(const PromiseFunc& impl)
-			: IPromise<TResult>(),
-			m_thread(impl,
+			: TPromise<TResult>(impl)
+		{
+		}
+
+		virtual void Run() override
+		{
+			m_thread = std::thread(m_impl,
 				[this](const TResult& result) { Resolve(result); },
 				[this](const TError& error) { Reject(error); }
-			)
-		{
+			);
 		}
 
 		~Async()
@@ -136,25 +202,55 @@ private:
 	};
 
 public:
+	virtual void Run() override
+	{
+		m_impl(
+			[this](const TResult& result) { Resolve(result); },
+			[this](const TError& error) { Reject(error); }
+		);
+	}
+
 	static PromisePtr Create(const PromiseFunc& impl)
 	{
-		IPromise<TResult>::PromisePtr ptr(new Promise(impl));
+		Promise<TResult>::PromisePtr ptr(new Promise(impl));
+		PushPull(ptr);
 		return ptr;
 	}
 
 	static PromisePtr CreateAsync(const PromiseFunc& impl)
 	{
-		IPromise<TResult>::PromisePtr ptr(new Async(impl));
+		TPromise<TResult>::PromisePtr ptr(new Async(impl));
+		PushPull(ptr);
 		return ptr;
 	}
 
-private:
-	Promise(const PromiseFunc& impl) : IPromise<TResult>()
+	static std::shared_ptr<TPromise<std::vector<TResult>>> All(const std::vector<TPromise<TResult>::PromisePtr>& all)
 	{
-		impl(
-			[this](const TResult& result) { Resolve(result); },
-			[this](const TError& error) { Reject(error); }
+		return Promise<std::vector<TResult>>::Create(
+			[all](const Promise<std::vector<TResult>>::OnResolveFunc& resolve, const Promise<std::vector<TResult>>::OnRejectFunc& reject) {
+				std::shared_ptr<std::atomic<size_t>> count(new std::atomic<size_t>(all.size()));
+				std::shared_ptr<std::vector<TResult>> result(new std::vector<TResult>(all.size()));
+				for (size_t i = 0; i < all.size(); ++i) {
+					all[i]->Then(
+						[i, result, count, resolve](const TResult& res) {
+							(*result)[i] = res;
+							(*count)--;
+
+							if (*count == 0) {
+								resolve(*result);
+							}
+						},
+						[reject](const TError& err) {
+							reject(err);
+						}
+					);
+				}
+			}
 		);
 	}
+
+private:
+	Promise(const PromiseFunc& impl) : TPromise(impl)
+	{}
 };
 
