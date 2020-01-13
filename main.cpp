@@ -62,7 +62,5 @@ int main()
 		}
 	);
 
-	IPromise::WaitForFinished();
-
 	async->Reset();
 }

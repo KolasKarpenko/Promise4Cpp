@@ -3,80 +3,14 @@
 #include <cassert>
 #include <string>
 #include <vector>
-#include <map>
 #include <functional>
 #include <mutex>
 #include <thread>
 #include <atomic>
 #include <chrono>
 
-class IPromise
-{
-public:
-	typedef std::shared_ptr<IPromise> PromisePtr;
-
-	IPromise(const IPromise&) = delete;
-
-	virtual ~IPromise()
-	{
-	}
-
-	virtual void Reset() = 0;
-
-	static void WaitForFinished()
-	{
-		while (true) {
-			{
-				std::lock_guard<std::mutex> lock(ms_poolMutex);
-				if (ms_pool.empty()) {
-					break;
-				}
-			}
-			std::this_thread::sleep_for(std::chrono::milliseconds(1));
-		}
-	}
-
-protected:
-	enum class State
-	{
-		Pending = 0,
-		Resolved,
-		Rejected
-	};
-
-	IPromise() : m_state(State::Pending)
-	{
-		static size_t lastId = 0;
-		m_id = lastId++;
-	}
-
-	static void PushPull(const PromisePtr& p)
-	{
-		assert(p);
-		{
-			std::lock_guard<std::mutex> lock(ms_poolMutex);
-			ms_pool.insert(std::make_pair(p->m_id, p));
-		}
-		p->Reset();
-	}
-
-	static void PopPull(size_t id)
-	{
-		std::lock_guard<std::mutex> lock(ms_poolMutex);
-		ms_pool.erase(id);
-	}
-
-	State m_state;
-	size_t m_id;
-	static std::mutex ms_poolMutex;
-	static std::map<size_t, PromisePtr> ms_pool;
-};
-
-std::mutex IPromise::ms_poolMutex;
-std::map<size_t, IPromise::PromisePtr> IPromise::ms_pool;
-
 template<typename TResult>
-class TPromise : public IPromise
+class TPromise
 {
 public:
 	typedef std::string TError;
@@ -88,7 +22,9 @@ public:
 		const OnRejectFunc& reject,
 		const OnProgressFunc& progress
 	)> PromiseFunc;
-	typedef std::shared_ptr<TPromise<TResult>> TPromisePtr;
+	typedef std::shared_ptr<TPromise<TResult>> PromisePtr;
+
+	virtual void Reset() = 0;
 
 	void Then(const OnResolveFunc& resolve)
 	{
@@ -209,11 +145,19 @@ public:
 	}
 
 protected:
-	TPromise(const PromiseFunc& impl) : IPromise(), m_impl(impl)
+	enum class State
+	{
+		Pending = 0,
+		Resolved,
+		Rejected
+	};
+
+	TPromise(const PromiseFunc& impl) : m_state(State::Pending), m_impl(impl)
 	{
 	}
 
-	void Resolve(const TResult& result) {
+	void Resolve(const TResult& result)
+	{
 		std::lock_guard<std::mutex> lock(m_mutex);
 
 		if (m_state != State::Pending) {
@@ -230,11 +174,10 @@ protected:
 		for (const auto& cb : m_resolveHandlers) {
 			cb(m_result);
 		}
-
-		PopPull(m_id);
 	}
 
-	void Reject(const TError& error) {
+	void Reject(const TError& error)
+	{
 		std::lock_guard<std::mutex> lock(m_mutex);
 
 		if (m_state != State::Pending) {
@@ -246,8 +189,6 @@ protected:
 		for (const auto& cb : m_rejectHandlers) {
 			cb(m_error);
 		}
-
-		PopPull(m_id);
 	}
 
 	void Progress(int progress)
@@ -263,6 +204,7 @@ protected:
 		}
 	}
 
+	State m_state;
 	PromiseFunc m_impl;
 	TResult m_result;
 	TError m_error;
@@ -320,21 +262,21 @@ public:
 		);
 	}
 
-	static TPromisePtr Create(const PromiseFunc& impl)
+	static PromisePtr Create(const PromiseFunc& impl)
 	{
-		Promise<TResult>::TPromisePtr ptr(new Promise(impl));
-		PushPull(ptr);
+		Promise<TResult>::PromisePtr ptr(new Promise(impl));
+		ptr->Reset();
 		return ptr;
 	}
 
-	static TPromisePtr CreateAsync(const PromiseFunc& impl)
+	static PromisePtr CreateAsync(const PromiseFunc& impl)
 	{
-		TPromise<TResult>::TPromisePtr ptr(new Async(impl));
-		PushPull(ptr);
+		TPromise<TResult>::PromisePtr ptr(new Async(impl));
+		ptr->Reset();
 		return ptr;
 	}
 
-	static std::shared_ptr<TPromise<std::vector<TResult>>> All(const std::vector<TPromise<TResult>::TPromisePtr>& all)
+	static std::shared_ptr<TPromise<std::vector<TResult>>> All(const std::vector<TPromise<TResult>::PromisePtr>& all)
 	{
 		return Promise<std::vector<TResult>>::CreateAsync(
 			[all](
