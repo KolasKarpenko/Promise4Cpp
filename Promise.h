@@ -21,7 +21,7 @@ public:
 	{
 	}
 
-	virtual void Run() = 0;
+	virtual void Reset() = 0;
 
 	static void WaitForFinished()
 	{
@@ -57,7 +57,7 @@ protected:
 			std::lock_guard<std::mutex> lock(ms_poolMutex);
 			ms_pool.insert(std::make_pair(p->m_id, p));
 		}
-		p->Run();
+		p->Reset();
 	}
 
 	static void PopPull(size_t id)
@@ -80,19 +80,61 @@ class TPromise : public IPromise
 {
 public:
 	typedef std::string TError;
-	typedef std::function<void(const TResult & result)> OnResolveFunc;
-	typedef std::function<void(const TError & error)> OnRejectFunc;
-	typedef std::function<void(const OnResolveFunc & resolve, const OnRejectFunc & reject)> PromiseFunc;
-	typedef std::shared_ptr<TPromise<TResult>> PromisePtr;
+	typedef std::function<void(const TResult& result)> OnResolveFunc;
+	typedef std::function<void(const TError& error)> OnRejectFunc;
+	typedef std::function<void(int progress)> OnProgressFunc;
+	typedef std::function<void(
+		const OnResolveFunc& resolve,
+		const OnRejectFunc& reject,
+		const OnProgressFunc& progress
+	)> PromiseFunc;
+	typedef std::shared_ptr<TPromise<TResult>> TPromisePtr;
 
-	void Then(const OnResolveFunc& resolve, const OnRejectFunc& reject)
+	void Then(const OnResolveFunc& resolve)
 	{
 		std::lock_guard<std::mutex> lock(m_mutex);
+		m_resolveHandlers.push_back(resolve);
 
 		switch (m_state)
 		{
 		case State::Pending:
-			m_handlers.push_back(std::make_pair(resolve, reject));
+			break;
+		case State::Resolved:
+			resolve(m_result);
+			break;
+		default:
+			break;
+		}
+	}
+
+	void Then(const OnResolveFunc& resolve, const OnProgressFunc& progress)
+	{
+		std::lock_guard<std::mutex> lock(m_mutex);
+		m_resolveHandlers.push_back(resolve);
+		m_progressHandlers.push_back(progress);
+
+		switch (m_state)
+		{
+		case State::Pending:
+			break;
+		case State::Resolved:
+			progress(100);
+			resolve(m_result);
+			break;
+		default:
+			break;
+		}
+	}
+
+	void Then(const OnResolveFunc& resolve, const OnRejectFunc& reject)
+	{
+		std::lock_guard<std::mutex> lock(m_mutex);
+		m_resolveHandlers.push_back(resolve);
+		m_rejectHandlers.push_back(reject);
+
+		switch (m_state)
+		{
+		case State::Pending:
 			break;
 		case State::Resolved:
 			resolve(m_result);
@@ -105,10 +147,33 @@ public:
 		}
 	}
 
+	void Then(const OnResolveFunc& resolve, const OnRejectFunc& reject, const OnProgressFunc& progress)
+	{
+		std::lock_guard<std::mutex> lock(m_mutex);
+		m_resolveHandlers.push_back(resolve);
+		m_rejectHandlers.push_back(reject);
+		m_progressHandlers.push_back(progress);
+
+		switch (m_state)
+		{
+		case State::Pending:
+			break;
+		case State::Resolved:
+			progress(100);
+			resolve(m_result);
+			break;
+		case State::Rejected:
+			reject(m_error);
+			break;
+		default:
+			break;
+		}
+	}
+
 	bool Result(TResult& result, TError& error)
 	{
-		std::atomic<bool> resolved = false;
-		std::atomic<bool> ok = true;
+		std::atomic<bool> resolved(false);
+		std::atomic<bool> ok(true);
 
 		Then(
 			[&result, &resolved](const TResult& value) {
@@ -122,8 +187,22 @@ public:
 			}
 		);
 
+		size_t resolveIndex = 0;
+		size_t rejectIndex = 0;
+		{
+			std::lock_guard<std::mutex> lock(m_mutex);
+			resolveIndex = m_resolveHandlers.size() - 1;
+			rejectIndex = m_rejectHandlers.size() - 1;
+		}
+
 		while (!resolved) {
 			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+
+		{
+			std::lock_guard<std::mutex> lock(m_mutex);
+			m_resolveHandlers.erase(m_resolveHandlers.begin() + resolveIndex);
+			m_rejectHandlers.erase(m_rejectHandlers.begin() + rejectIndex);
 		}
 
 		return ok;
@@ -143,8 +222,13 @@ protected:
 
 		m_state = State::Resolved;
 		m_result = result;
-		for (const auto& cb : m_handlers) {
-			cb.first(m_result);
+
+		for (const auto& cb : m_progressHandlers) {
+			cb(100);
+		}
+
+		for (const auto& cb : m_resolveHandlers) {
+			cb(m_result);
 		}
 
 		PopPull(m_id);
@@ -159,17 +243,32 @@ protected:
 
 		m_state = State::Rejected;
 		m_error = error;
-		for (const auto& cb : m_handlers) {
-			cb.second(m_error);
+		for (const auto& cb : m_rejectHandlers) {
+			cb(m_error);
 		}
 
 		PopPull(m_id);
 	}
 
+	void Progress(int progress)
+	{
+		std::lock_guard<std::mutex> lock(m_mutex);
+
+		if (m_state != State::Pending) {
+			return;
+		}
+
+		for (const auto& cb : m_progressHandlers) {
+			cb(progress);
+		}
+	}
+
 	PromiseFunc m_impl;
 	TResult m_result;
 	TError m_error;
-	std::vector<std::pair<OnResolveFunc, OnRejectFunc>> m_handlers;
+	std::vector<OnResolveFunc> m_resolveHandlers;
+	std::vector<OnRejectFunc> m_rejectHandlers;
+	std::vector<OnProgressFunc> m_progressHandlers;
 	std::mutex m_mutex;
 };
 
@@ -180,71 +279,84 @@ private:
 	class Async : public TPromise<TResult>
 	{
 	public:
-		Async(const PromiseFunc& impl)
-			: TPromise<TResult>(impl)
+		Async(const PromiseFunc& impl) : TPromise<TResult>(impl)
 		{
 		}
 
-		virtual void Run() override
+		virtual void Reset() override
 		{
-			m_thread = std::thread(m_impl,
+			if (m_threadPtr) {
+				m_threadPtr->join();
+			}
+
+			m_state = State::Pending;
+
+			m_threadPtr.reset(new std::thread(m_impl,
 				[this](const TResult& result) { Resolve(result); },
-				[this](const TError& error) { Reject(error); }
-			);
+				[this](const TError& error) { Reject(error); },
+				[this](int progress) { Progress(progress); }
+			));
 		}
 
 		~Async()
 		{
-			m_thread.join();
+			if (m_threadPtr) {
+				m_threadPtr->join();
+			}
 		}
 	private:
-		std::thread m_thread;
+		std::shared_ptr<std::thread> m_threadPtr;
 	};
 
 public:
-	virtual void Run() override
+	virtual void Reset() override
 	{
+		m_state = State::Pending;
+
 		m_impl(
 			[this](const TResult& result) { Resolve(result); },
-			[this](const TError& error) { Reject(error); }
+			[this](const TError& error) { Reject(error); },
+			[this](int progress) { Progress(progress); }
 		);
 	}
 
-	static PromisePtr Create(const PromiseFunc& impl)
+	static TPromisePtr Create(const PromiseFunc& impl)
 	{
-		Promise<TResult>::PromisePtr ptr(new Promise(impl));
+		Promise<TResult>::TPromisePtr ptr(new Promise(impl));
 		PushPull(ptr);
 		return ptr;
 	}
 
-	static PromisePtr CreateAsync(const PromiseFunc& impl)
+	static TPromisePtr CreateAsync(const PromiseFunc& impl)
 	{
-		TPromise<TResult>::PromisePtr ptr(new Async(impl));
+		TPromise<TResult>::TPromisePtr ptr(new Async(impl));
 		PushPull(ptr);
 		return ptr;
 	}
 
-	static std::shared_ptr<TPromise<std::vector<TResult>>> All(const std::vector<TPromise<TResult>::PromisePtr>& all)
+	static std::shared_ptr<TPromise<std::vector<TResult>>> All(const std::vector<TPromise<TResult>::TPromisePtr>& all)
 	{
-		return Promise<std::vector<TResult>>::Create(
-			[all](const Promise<std::vector<TResult>>::OnResolveFunc& resolve, const Promise<std::vector<TResult>>::OnRejectFunc& reject) {
-				std::shared_ptr<std::atomic<size_t>> count(new std::atomic<size_t>(all.size()));
-				std::shared_ptr<std::vector<TResult>> result(new std::vector<TResult>(all.size()));
+		return Promise<std::vector<TResult>>::CreateAsync(
+			[all](
+				const Promise<std::vector<TResult>>::OnResolveFunc& resolve,
+				const Promise<std::vector<TResult>>::OnRejectFunc& reject,
+				const Promise<std::vector<TResult>>::OnProgressFunc& progress
+			) {
+				std::vector<TResult> result(all.size());
 				for (size_t i = 0; i < all.size(); ++i) {
-					all[i]->Then(
-						[i, result, count, resolve](const TResult& res) {
-							(*result)[i] = res;
-							(*count)--;
-
-							if (*count == 0) {
-								resolve(*result);
-							}
-						},
-						[reject](const TError& err) {
-							reject(err);
-						}
-					);
+					TResult res;
+					TError err;
+					if (all[i]->Result(res, err)) {
+						result[i] = res;
+						progress(int(i * 100.0 / all.size()));
+					}
+					else {
+						reject(err);
+						return;
+					}
 				}
+
+				resolve(result);
 			}
 		);
 	}
