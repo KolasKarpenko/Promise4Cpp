@@ -63,4 +63,6 @@ int main()
 	);
 
 	async->Reset();
+
+	IPromise::Join();
 }
