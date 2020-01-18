@@ -24,7 +24,7 @@ public:
 	virtual void Reset() = 0;
 
 	State GetState() const {
-		std::lock_guard<std::mutex> lock(m_mutex);
+		std::lock_guard<std::recursive_mutex> lock(m_mutex);
 		return m_state;
 	}
 
@@ -43,7 +43,7 @@ public:
 protected:
 	size_t m_id;
 	State m_state;
-	mutable std::mutex m_mutex;
+	mutable std::recursive_mutex m_mutex;
 
 	IPromise(): m_state(State::Pending)
 	{
@@ -90,7 +90,7 @@ public:
 
 	void Then(const OnResolveFunc& resolve)
 	{
-		std::lock_guard<std::mutex> lock(m_mutex);
+		std::lock_guard<std::recursive_mutex> lock(m_mutex);
 		m_resolveHandlers.push_back(resolve);
 
 		switch (m_state)
@@ -107,7 +107,7 @@ public:
 
 	void Then(const OnResolveFunc& resolve, const OnProgressFunc& progress)
 	{
-		std::lock_guard<std::mutex> lock(m_mutex);
+		std::lock_guard<std::recursive_mutex> lock(m_mutex);
 		m_resolveHandlers.push_back(resolve);
 		m_progressHandlers.push_back(progress);
 
@@ -126,7 +126,7 @@ public:
 
 	void Then(const OnResolveFunc& resolve, const OnRejectFunc& reject)
 	{
-		std::lock_guard<std::mutex> lock(m_mutex);
+		std::lock_guard<std::recursive_mutex> lock(m_mutex);
 		m_resolveHandlers.push_back(resolve);
 		m_rejectHandlers.push_back(reject);
 
@@ -147,7 +147,7 @@ public:
 
 	void Then(const OnResolveFunc& resolve, const OnRejectFunc& reject, const OnProgressFunc& progress)
 	{
-		std::lock_guard<std::mutex> lock(m_mutex);
+		std::lock_guard<std::recursive_mutex> lock(m_mutex);
 		m_resolveHandlers.push_back(resolve);
 		m_rejectHandlers.push_back(reject);
 		m_progressHandlers.push_back(progress);
@@ -173,22 +173,24 @@ public:
 		std::atomic<bool> resolved(false);
 		std::atomic<bool> ok(true);
 
-		Then(
-			[&result, &resolved](const TResult& value) {
-				result = value;
-				resolved = true;
-			},
-			[&error, &resolved, &ok](const TError& value) {
-				error = value;
-				resolved = true;
-				ok = false;
-			}
-		);
-
 		size_t resolveIndex = 0;
 		size_t rejectIndex = 0;
+
 		{
-			std::lock_guard<std::mutex> lock(m_mutex);
+			std::lock_guard<std::recursive_mutex> lock(m_mutex);
+
+			Then(
+				[&result, &resolved](const TResult& value) {
+					result = value;
+					resolved = true;
+				},
+				[&error, &resolved, &ok](const TError& value) {
+					error = value;
+					resolved = true;
+					ok = false;
+				}
+			);
+
 			resolveIndex = m_resolveHandlers.size() - 1;
 			rejectIndex = m_rejectHandlers.size() - 1;
 		}
@@ -198,9 +200,55 @@ public:
 		}
 
 		{
-			std::lock_guard<std::mutex> lock(m_mutex);
+			std::lock_guard<std::recursive_mutex> lock(m_mutex);
 			m_resolveHandlers.erase(m_resolveHandlers.begin() + resolveIndex);
 			m_rejectHandlers.erase(m_rejectHandlers.begin() + rejectIndex);
+		}
+
+		return ok;
+	}
+
+	bool Result(TResult& result, TError& error, const OnProgressFunc& progress)
+	{
+		std::atomic<bool> resolved(false);
+		std::atomic<bool> ok(true);
+
+		size_t resolveIndex = 0;
+		size_t rejectIndex = 0;
+		size_t progressIndex = 0;
+
+		{
+			std::lock_guard<std::recursive_mutex> lock(m_mutex);
+
+			Then(
+				[&result, &resolved](const TResult& value) {
+					result = value;
+					resolved = true;
+				},
+				[&error, &resolved, &ok](const TError& value) {
+					error = value;
+					resolved = true;
+					ok = false;
+				},
+				[&progress](int p) {
+					progress(p);
+				}
+			);
+
+			resolveIndex = m_resolveHandlers.size() - 1;
+			rejectIndex = m_rejectHandlers.size() - 1;
+			progressIndex = m_progressHandlers.size() - 1;
+		}
+
+		while (!resolved) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+
+		{
+			std::lock_guard<std::recursive_mutex> lock(m_mutex);
+			m_resolveHandlers.erase(m_resolveHandlers.begin() + resolveIndex);
+			m_rejectHandlers.erase(m_rejectHandlers.begin() + rejectIndex);
+			m_progressHandlers.erase(m_progressHandlers.begin() + progressIndex);
 		}
 
 		return ok;
@@ -213,7 +261,7 @@ protected:
 
 	void Resolve(const TResult& result)
 	{
-		std::lock_guard<std::mutex> lock(m_mutex);
+		std::lock_guard<std::recursive_mutex> lock(m_mutex);
 
 		if (m_state != State::Pending) {
 			return;
@@ -235,7 +283,7 @@ protected:
 
 	void Reject(const TError& error)
 	{
-		std::lock_guard<std::mutex> lock(m_mutex);
+		std::lock_guard<std::recursive_mutex> lock(m_mutex);
 
 		if (m_state != State::Pending) {
 			return;
@@ -252,7 +300,7 @@ protected:
 
 	void Progress(int progress)
 	{
-		std::lock_guard<std::mutex> lock(m_mutex);
+		std::lock_guard<std::recursive_mutex> lock(m_mutex);
 
 		if (m_state != State::Pending) {
 			return;
