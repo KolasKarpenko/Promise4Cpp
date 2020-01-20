@@ -29,15 +29,9 @@ public:
 	}
 
 	static void Join() {
-		while (true) {
-			{
-				std::lock_guard<std::mutex> lock(ms_poolMutex);
-				if (ms_pool.empty()) {
-					break;
-				}
-			}
-			std::this_thread::sleep_for(std::chrono::milliseconds(1));
-		}
+		std::mutex m;
+		std::unique_lock<std::mutex> lk(m);
+		ms_exitCondition.wait(lk, [] { return ms_pool.empty(); });
 	}
 
 protected:
@@ -63,15 +57,21 @@ protected:
 	{
 		std::lock_guard<std::mutex> lock(ms_poolMutex);
 		ms_pool.erase(id);
+
+		if (ms_pool.empty()) {
+			ms_exitCondition.notify_one();
+		}
 	}
 
 private:
 	static std::mutex ms_poolMutex;
 	static std::map<size_t, std::shared_ptr<IPromise>> ms_pool;
+	static std::condition_variable ms_exitCondition;
 };
 
 std::mutex IPromise::ms_poolMutex;
 std::map<size_t, std::shared_ptr<IPromise>> IPromise::ms_pool;
+std::condition_variable IPromise::ms_exitCondition;
 
 template<typename TResult>
 class TPromise : public IPromise
@@ -168,8 +168,48 @@ public:
 		}
 	}
 
+	bool Result(TResult& result)
+	{
+		std::condition_variable cv;
+		std::atomic<bool> resolved(false);
+		std::atomic<bool> ok(true);
+
+		size_t resolveIndex = 0;
+
+		{
+			std::lock_guard<std::recursive_mutex> lock(m_mutex);
+
+			Then(
+				[&result, &resolved, &cv](const TResult& value) {
+					result = value;
+					resolved = true;
+					cv.notify_one();
+				},
+				[&resolved, &ok, &cv](const TError& /*value*/) {
+					resolved = true;
+					ok = false;
+					cv.notify_one();
+				}
+			);
+
+			resolveIndex = m_resolveHandlers.size() - 1;
+		}
+
+		std::mutex m;
+		std::unique_lock<std::mutex> lk(m);
+		cv.wait(lk, [&resolved] { return resolved == true; });
+
+		{
+			std::lock_guard<std::recursive_mutex> lock(m_mutex);
+			m_resolveHandlers.erase(m_resolveHandlers.begin() + resolveIndex);
+		}
+
+		return ok;
+	}
+
 	bool Result(TResult& result, TError& error)
 	{
+		std::condition_variable cv;
 		std::atomic<bool> resolved(false);
 		std::atomic<bool> ok(true);
 
@@ -180,14 +220,16 @@ public:
 			std::lock_guard<std::recursive_mutex> lock(m_mutex);
 
 			Then(
-				[&result, &resolved](const TResult& value) {
+				[&result, &resolved, &cv](const TResult& value) {
 					result = value;
 					resolved = true;
+					cv.notify_one();
 				},
-				[&error, &resolved, &ok](const TError& value) {
+				[&error, &resolved, &ok, &cv](const TError& value) {
 					error = value;
 					resolved = true;
 					ok = false;
+					cv.notify_one();
 				}
 			);
 
@@ -195,9 +237,9 @@ public:
 			rejectIndex = m_rejectHandlers.size() - 1;
 		}
 
-		while (!resolved) {
-			std::this_thread::sleep_for(std::chrono::milliseconds(1));
-		}
+		std::mutex m;
+		std::unique_lock<std::mutex> lk(m);
+		cv.wait(lk, [&resolved] { return resolved == true; });
 
 		{
 			std::lock_guard<std::recursive_mutex> lock(m_mutex);
@@ -210,6 +252,7 @@ public:
 
 	bool Result(TResult& result, TError& error, const OnProgressFunc& progress)
 	{
+		std::condition_variable cv;
 		std::atomic<bool> resolved(false);
 		std::atomic<bool> ok(true);
 
@@ -221,11 +264,11 @@ public:
 			std::lock_guard<std::recursive_mutex> lock(m_mutex);
 
 			Then(
-				[&result, &resolved](const TResult& value) {
+				[&result, &resolved, &cv](const TResult& value) {
 					result = value;
 					resolved = true;
 				},
-				[&error, &resolved, &ok](const TError& value) {
+				[&error, &resolved, &ok, &cv](const TError& value) {
 					error = value;
 					resolved = true;
 					ok = false;
@@ -240,9 +283,9 @@ public:
 			progressIndex = m_progressHandlers.size() - 1;
 		}
 
-		while (!resolved) {
-			std::this_thread::sleep_for(std::chrono::milliseconds(1));
-		}
+		std::mutex m;
+		std::unique_lock<std::mutex> lk(m);
+		cv.wait(lk, [&resolved] { return resolved == true; });
 
 		{
 			std::lock_guard<std::recursive_mutex> lock(m_mutex);
