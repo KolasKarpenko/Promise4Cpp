@@ -37,6 +37,7 @@ public:
 protected:
 	size_t m_id;
 	State m_state;
+	static size_t ms_handlerId;
 	mutable std::recursive_mutex m_mutex;
 
 	IPromise(): m_state(State::Pending)
@@ -72,6 +73,7 @@ private:
 std::mutex IPromise::ms_poolMutex;
 std::map<size_t, std::shared_ptr<IPromise>> IPromise::ms_pool;
 std::condition_variable IPromise::ms_exitCondition;
+size_t IPromise::ms_handlerId;
 
 template<typename TResult>
 class TPromise : public IPromise
@@ -91,7 +93,7 @@ public:
 	void Then(const OnResolveFunc& resolve)
 	{
 		std::lock_guard<std::recursive_mutex> lock(m_mutex);
-		m_resolveHandlers.push_back(resolve);
+		m_resolveHandlers.insert(std::make_pair(ms_handlerId++, resolve));
 
 		switch (m_state)
 		{
@@ -108,8 +110,8 @@ public:
 	void Then(const OnResolveFunc& resolve, const OnProgressFunc& progress)
 	{
 		std::lock_guard<std::recursive_mutex> lock(m_mutex);
-		m_resolveHandlers.push_back(resolve);
-		m_progressHandlers.push_back(progress);
+		m_resolveHandlers.insert(std::make_pair(ms_handlerId++, resolve));
+		m_progressHandlers.insert(std::make_pair(ms_handlerId++, progress));
 
 		switch (m_state)
 		{
@@ -127,8 +129,8 @@ public:
 	void Then(const OnResolveFunc& resolve, const OnRejectFunc& reject)
 	{
 		std::lock_guard<std::recursive_mutex> lock(m_mutex);
-		m_resolveHandlers.push_back(resolve);
-		m_rejectHandlers.push_back(reject);
+		m_resolveHandlers.insert(std::make_pair(ms_handlerId++, resolve));
+		m_rejectHandlers.insert(std::make_pair(ms_handlerId++, reject));
 
 		switch (m_state)
 		{
@@ -148,9 +150,9 @@ public:
 	void Then(const OnResolveFunc& resolve, const OnRejectFunc& reject, const OnProgressFunc& progress)
 	{
 		std::lock_guard<std::recursive_mutex> lock(m_mutex);
-		m_resolveHandlers.push_back(resolve);
-		m_rejectHandlers.push_back(reject);
-		m_progressHandlers.push_back(progress);
+		m_resolveHandlers.insert(std::make_pair(ms_handlerId++, resolve));
+		m_rejectHandlers.insert(std::make_pair(ms_handlerId++, reject));
+		m_progressHandlers.insert(std::make_pair(ms_handlerId++, progress));
 
 		switch (m_state)
 		{
@@ -192,7 +194,7 @@ public:
 				}
 			);
 
-			resolveIndex = m_resolveHandlers.size() - 1;
+			resolveIndex = m_resolveHandlers.crbegin()->first;
 		}
 
 		std::mutex m;
@@ -201,7 +203,8 @@ public:
 
 		{
 			std::lock_guard<std::recursive_mutex> lock(m_mutex);
-			m_resolveHandlers.erase(m_resolveHandlers.begin() + resolveIndex);
+			std::cout << "resolveIndex " << resolveIndex << std::endl;
+			m_resolveHandlers.erase(resolveIndex);
 		}
 
 		return ok;
@@ -233,8 +236,8 @@ public:
 				}
 			);
 
-			resolveIndex = m_resolveHandlers.size() - 1;
-			rejectIndex = m_rejectHandlers.size() - 1;
+			resolveIndex = m_resolveHandlers.crbegin()->first;
+			rejectIndex = m_rejectHandlers.crbegin()->first;
 		}
 
 		std::mutex m;
@@ -243,8 +246,9 @@ public:
 
 		{
 			std::lock_guard<std::recursive_mutex> lock(m_mutex);
-			m_resolveHandlers.erase(m_resolveHandlers.begin() + resolveIndex);
-			m_rejectHandlers.erase(m_rejectHandlers.begin() + rejectIndex);
+			std::cout << "resolveIndex " << resolveIndex << std::endl;
+			m_resolveHandlers.erase(resolveIndex);
+			m_rejectHandlers.erase(rejectIndex);
 		}
 
 		return ok;
@@ -278,9 +282,9 @@ public:
 				}
 			);
 
-			resolveIndex = m_resolveHandlers.size() - 1;
-			rejectIndex = m_rejectHandlers.size() - 1;
-			progressIndex = m_progressHandlers.size() - 1;
+			resolveIndex = m_resolveHandlers.crbegin()->first;
+			rejectIndex = m_rejectHandlers.crbegin()->first;
+			progressIndex = m_progressHandlers.crbegin()->first;
 		}
 
 		std::mutex m;
@@ -289,9 +293,9 @@ public:
 
 		{
 			std::lock_guard<std::recursive_mutex> lock(m_mutex);
-			m_resolveHandlers.erase(m_resolveHandlers.begin() + resolveIndex);
-			m_rejectHandlers.erase(m_rejectHandlers.begin() + rejectIndex);
-			m_progressHandlers.erase(m_progressHandlers.begin() + progressIndex);
+			m_resolveHandlers.erase(resolveIndex);
+			m_rejectHandlers.erase(rejectIndex);
+			m_progressHandlers.erase(progressIndex);
 		}
 
 		return ok;
@@ -314,11 +318,11 @@ protected:
 		m_result = result;
 
 		for (const auto& cb : m_progressHandlers) {
-			cb(100);
+			cb.second(100);
 		}
 
 		for (const auto& cb : m_resolveHandlers) {
-			cb(m_result);
+			cb.second(m_result);
 		}
 
 		PopPool(m_id);
@@ -335,7 +339,7 @@ protected:
 		m_state = State::Rejected;
 		m_error = error;
 		for (const auto& cb : m_rejectHandlers) {
-			cb(m_error);
+			cb.second(m_error);
 		}
 
 		PopPool(m_id);
@@ -350,16 +354,16 @@ protected:
 		}
 
 		for (const auto& cb : m_progressHandlers) {
-			cb(progress);
+			cb.second(progress);
 		}
 	}
 
 	PromiseFunc m_impl;
 	TResult m_result;
 	TError m_error;
-	std::vector<OnResolveFunc> m_resolveHandlers;
-	std::vector<OnRejectFunc> m_rejectHandlers;
-	std::vector<OnProgressFunc> m_progressHandlers;
+	std::map<size_t, OnResolveFunc> m_resolveHandlers;
+	std::map<size_t, OnRejectFunc> m_rejectHandlers;
+	std::map<size_t, OnProgressFunc> m_progressHandlers;
 };
 
 template<typename TResult>

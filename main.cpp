@@ -14,7 +14,7 @@ int main()
 		) {
 			for (int i = 0; i < 10; ++i) {
 				progress(i * 10);
-				std::this_thread::sleep_for(std::chrono::milliseconds(100));
+				//std::this_thread::sleep_for(std::chrono::milliseconds(100));
 			}
 			resolve("async resolved");
 		}
@@ -64,10 +64,10 @@ int main()
 
 	async->Reset();
 
-	//std::string res;
-	//if (async->Result(res)) {
-	//	std::cout << "async->Result(res) " << res << std::endl;
-	//}
+	std::string res;
+	if (async->Result(res)) {
+		std::cout << "async->Result(res) " << res << std::endl;
+	}
 
 	IPromise::Join();
 }
