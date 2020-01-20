@@ -203,7 +203,6 @@ public:
 
 		{
 			std::lock_guard<std::recursive_mutex> lock(m_mutex);
-			std::cout << "resolveIndex " << resolveIndex << std::endl;
 			m_resolveHandlers.erase(resolveIndex);
 		}
 
@@ -246,7 +245,6 @@ public:
 
 		{
 			std::lock_guard<std::recursive_mutex> lock(m_mutex);
-			std::cout << "resolveIndex " << resolveIndex << std::endl;
 			m_resolveHandlers.erase(resolveIndex);
 			m_rejectHandlers.erase(rejectIndex);
 		}
