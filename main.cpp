@@ -13,13 +13,17 @@ int main()
 			const Promise<std::string>::OnProgressFunc& progress,
 			const Promise<std::string>::IsCanceledFunc& isCanceled
 		) {
-			for (int i = 0; i < 10; ++i) {
+			for (int i = 0; i < 100; ++i) {
 				if (isCanceled()) {
 					std::cout << "async canceled" << std::endl;
 					return;
 				}
-				progress(i * 10);
-				std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+				if (i % 10 == 0) {
+					progress(i);
+				}
+
+				std::this_thread::sleep_for(std::chrono::milliseconds(2));
 			}
 			resolve("async resolved");
 		}
@@ -34,7 +38,7 @@ int main()
 		}
 	);
 
-	std::this_thread::sleep_for(std::chrono::milliseconds(500));
+	std::this_thread::sleep_for(std::chrono::milliseconds(100));
 	async->Cancel();
 
 	auto sync = Promise<std::string>::Create(

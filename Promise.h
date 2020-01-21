@@ -177,22 +177,23 @@ public:
 	{
 		std::condition_variable cv;
 		std::atomic<bool> resolved(false);
-		std::atomic<bool> ok(true);
+		std::atomic<bool> ok(false);
 
 		size_t resolveIndex = 0;
 
 		{
 			std::lock_guard<std::recursive_mutex> lock(m_mutex);
+			m_cancelConditionPtr = &cv;
 
 			Then(
-				[&result, &resolved, &cv](const TResult& value) {
+				[&result, &resolved, &ok, &cv](const TResult& value) {
 					result = value;
 					resolved = true;
+					ok = true;
 					cv.notify_one();
 				},
-				[&resolved, &ok, &cv](const TError& /*value*/) {
+				[&resolved, &cv](const TError& /*value*/) {
 					resolved = true;
-					ok = false;
 					cv.notify_one();
 				}
 			);
@@ -202,10 +203,13 @@ public:
 
 		std::mutex m;
 		std::unique_lock<std::mutex> lk(m);
-		cv.wait(lk, [&resolved] { return resolved == true; });
+		cv.wait(lk, [&resolved, this] { 
+			return resolved == true || GetState() == State::Canceled; 
+		});
 
 		{
 			std::lock_guard<std::recursive_mutex> lock(m_mutex);
+			m_cancelConditionPtr = nullptr;
 			m_resolveHandlers.erase(resolveIndex);
 		}
 
@@ -216,24 +220,25 @@ public:
 	{
 		std::condition_variable cv;
 		std::atomic<bool> resolved(false);
-		std::atomic<bool> ok(true);
+		std::atomic<bool> ok(false);
 
 		size_t resolveIndex = 0;
 		size_t rejectIndex = 0;
 
 		{
 			std::lock_guard<std::recursive_mutex> lock(m_mutex);
+			m_cancelConditionPtr = &cv;
 
 			Then(
-				[&result, &resolved, &cv](const TResult& value) {
+				[&result, &resolved, &ok, &cv](const TResult& value) {
 					result = value;
 					resolved = true;
+					ok = true;
 					cv.notify_one();
 				},
-				[&error, &resolved, &ok, &cv](const TError& value) {
+				[&error, &resolved, &cv](const TError& value) {
 					error = value;
 					resolved = true;
-					ok = false;
 					cv.notify_one();
 				}
 			);
@@ -244,10 +249,11 @@ public:
 
 		std::mutex m;
 		std::unique_lock<std::mutex> lk(m);
-		cv.wait(lk, [&resolved] { return resolved == true; });
+		cv.wait(lk, [&resolved, this] { return resolved == true || GetState() == State::Canceled; });
 
 		{
 			std::lock_guard<std::recursive_mutex> lock(m_mutex);
+			m_cancelConditionPtr = nullptr;
 			m_resolveHandlers.erase(resolveIndex);
 			m_rejectHandlers.erase(rejectIndex);
 		}
@@ -259,7 +265,7 @@ public:
 	{
 		std::condition_variable cv;
 		std::atomic<bool> resolved(false);
-		std::atomic<bool> ok(true);
+		std::atomic<bool> ok(false);
 
 		size_t resolveIndex = 0;
 		size_t rejectIndex = 0;
@@ -267,16 +273,17 @@ public:
 
 		{
 			std::lock_guard<std::recursive_mutex> lock(m_mutex);
+			m_cancelConditionPtr = &cv;
 
 			Then(
-				[&result, &resolved, &cv](const TResult& value) {
+				[&result, &resolved, &ok, &cv](const TResult& value) {
 					result = value;
 					resolved = true;
+					ok = true;
 				},
-				[&error, &resolved, &ok, &cv](const TError& value) {
+				[&error, &resolved, &cv](const TError& value) {
 					error = value;
 					resolved = true;
-					ok = false;
 				},
 				[&progress](int p) {
 					progress(p);
@@ -290,10 +297,11 @@ public:
 
 		std::mutex m;
 		std::unique_lock<std::mutex> lk(m);
-		cv.wait(lk, [&resolved] { return resolved == true; });
+		cv.wait(lk, [&resolved, this] { return resolved == true || GetState() == State::Canceled; });
 
 		{
 			std::lock_guard<std::recursive_mutex> lock(m_mutex);
+			m_cancelConditionPtr = nullptr;
 			m_resolveHandlers.erase(resolveIndex);
 			m_rejectHandlers.erase(rejectIndex);
 			m_progressHandlers.erase(progressIndex);
@@ -312,15 +320,15 @@ public:
 
 		m_state = State::Canceled;
 
-		for (const auto& cb : m_progressHandlers) {
-			cb.second(0);
-		}
-
 		PopPool(m_id);
+
+		if (m_cancelConditionPtr != nullptr) {
+			m_cancelConditionPtr->notify_one();
+		}
 	}
 
 protected:
-	TPromise(const PromiseFunc& impl) : IPromise(), m_impl(impl)
+	TPromise(const PromiseFunc& impl) : IPromise(), m_impl(impl), m_cancelConditionPtr(nullptr)
 	{
 	}
 
@@ -382,8 +390,6 @@ protected:
 		const OnProgressFunc& progress,
 		const IsCanceledFunc& isCanceled
 	) {
-		m_state = State::Pending;
-
 		m_impl(resolve, reject, progress, isCanceled);
 
 		if (GetState() == State::Pending) {
@@ -398,6 +404,7 @@ private:
 	std::map<size_t, OnResolveFunc> m_resolveHandlers;
 	std::map<size_t, OnRejectFunc> m_rejectHandlers;
 	std::map<size_t, OnProgressFunc> m_progressHandlers;
+	std::condition_variable* m_cancelConditionPtr;
 };
 
 template<typename TResult>
@@ -416,6 +423,8 @@ private:
 			if (m_threadPtr) {
 				m_threadPtr->join();
 			}
+
+			m_state = State::Pending;
 
 			m_threadPtr.reset(new std::thread(
 				[this](
@@ -446,6 +455,8 @@ private:
 public:
 	virtual void Reset() override
 	{
+		m_state = State::Pending;
+
 		Run(
 			[this](const TResult& result) { Resolve(result); },
 			[this](const TError& error) { Reject(error); },
