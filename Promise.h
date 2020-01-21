@@ -17,7 +17,8 @@ public:
 	{
 		Pending = 0,
 		Resolved,
-		Rejected
+		Rejected,
+		Canceled
 	};
 
 	virtual ~IPromise() {}
@@ -83,10 +84,12 @@ public:
 	typedef std::function<void(const TResult& result)> OnResolveFunc;
 	typedef std::function<void(const TError& error)> OnRejectFunc;
 	typedef std::function<void(int progress)> OnProgressFunc;
+	typedef std::function<bool()> IsCanceledFunc;
 	typedef std::function<void(
 		const OnResolveFunc& resolve,
 		const OnRejectFunc& reject,
-		const OnProgressFunc& progress
+		const OnProgressFunc& progress,
+		const IsCanceledFunc& isCanceled
 	)> PromiseFunc;
 	typedef std::shared_ptr<TPromise<TResult>> PromisePtr;
 
@@ -299,6 +302,23 @@ public:
 		return ok;
 	}
 
+	void Cancel()
+	{
+		std::lock_guard<std::recursive_mutex> lock(m_mutex);
+
+		if (m_state != State::Pending) {
+			return;
+		}
+
+		m_state = State::Canceled;
+
+		for (const auto& cb : m_progressHandlers) {
+			cb.second(0);
+		}
+
+		PopPool(m_id);
+	}
+
 protected:
 	TPromise(const PromiseFunc& impl) : IPromise(), m_impl(impl)
 	{
@@ -356,6 +376,22 @@ protected:
 		}
 	}
 
+	void Run(
+		const OnResolveFunc& resolve,
+		const OnRejectFunc& reject,
+		const OnProgressFunc& progress,
+		const IsCanceledFunc& isCanceled
+	) {
+		m_state = State::Pending;
+
+		m_impl(resolve, reject, progress, isCanceled);
+
+		if (GetState() == State::Pending) {
+			Cancel();
+		}
+	}
+
+private:
 	PromiseFunc m_impl;
 	TResult m_result;
 	TError m_error;
@@ -381,12 +417,19 @@ private:
 				m_threadPtr->join();
 			}
 
-			m_state = State::Pending;
-
-			m_threadPtr.reset(new std::thread(m_impl,
+			m_threadPtr.reset(new std::thread(
+				[this](
+					const TPromise<TResult>::OnResolveFunc& resolve,
+					const TPromise<TResult>::OnRejectFunc& reject,
+					const TPromise<TResult>::OnProgressFunc& progress,
+					const TPromise<TResult>::IsCanceledFunc& isCanceled
+				) {
+					Run(resolve, reject, progress, isCanceled);
+				},
 				[this](const TResult& result) { Resolve(result); },
 				[this](const TError& error) { Reject(error); },
-				[this](int progress) { Progress(progress); }
+				[this](int progress) { Progress(progress); },
+				[this]() { return GetState() == State::Canceled; }
 			));
 		}
 
@@ -403,12 +446,11 @@ private:
 public:
 	virtual void Reset() override
 	{
-		m_state = State::Pending;
-
-		m_impl(
+		Run(
 			[this](const TResult& result) { Resolve(result); },
 			[this](const TError& error) { Reject(error); },
-			[this](int progress) { Progress(progress); }
+			[this](int progress) { Progress(progress); },
+			[this]() { return GetState() == State::Canceled; }
 		);
 	}
 
@@ -434,10 +476,16 @@ public:
 			[all](
 				const Promise<std::vector<TResult>>::OnResolveFunc& resolve,
 				const Promise<std::vector<TResult>>::OnRejectFunc& reject,
-				const Promise<std::vector<TResult>>::OnProgressFunc& progress
+				const Promise<std::vector<TResult>>::OnProgressFunc& progress,
+				const Promise<std::string>::IsCanceledFunc& isCanceled
 			) {
 				std::vector<TResult> result(all.size());
 				for (size_t i = 0; i < all.size(); ++i) {
+
+					if (isCanceled()) {
+						return;
+					}
+
 					TResult res;
 					TError err;
 					if (all[i]->Result(res, err)) {

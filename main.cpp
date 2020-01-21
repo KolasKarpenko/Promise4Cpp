@@ -10,11 +10,16 @@ int main()
 		[](
 			const Promise<std::string>::OnResolveFunc& resolve,
 			const Promise<std::string>::OnRejectFunc& reject,
-			const Promise<std::string>::OnProgressFunc& progress
+			const Promise<std::string>::OnProgressFunc& progress,
+			const Promise<std::string>::IsCanceledFunc& isCanceled
 		) {
 			for (int i = 0; i < 10; ++i) {
+				if (isCanceled()) {
+					std::cout << "async canceled" << std::endl;
+					return;
+				}
 				progress(i * 10);
-				//std::this_thread::sleep_for(std::chrono::milliseconds(100));
+				std::this_thread::sleep_for(std::chrono::milliseconds(100));
 			}
 			resolve("async resolved");
 		}
@@ -29,11 +34,15 @@ int main()
 		}
 	);
 
+	std::this_thread::sleep_for(std::chrono::milliseconds(500));
+	async->Cancel();
+
 	auto sync = Promise<std::string>::Create(
 		[](
 			const Promise<std::string>::OnResolveFunc& resolve,
 			const Promise<std::string>::OnRejectFunc& reject,
-			const Promise<std::string>::OnProgressFunc& progress
+			const Promise<std::string>::OnProgressFunc& progress,
+			const Promise<std::string>::IsCanceledFunc& isCanceled
 		) {
 			//reject("error");
 			resolve("sync resolved");
