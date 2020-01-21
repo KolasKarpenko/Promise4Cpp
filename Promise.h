@@ -8,7 +8,6 @@
 #include <mutex>
 #include <thread>
 #include <atomic>
-#include <chrono>
 
 class IPromise
 {
