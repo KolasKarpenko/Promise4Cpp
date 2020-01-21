@@ -504,7 +504,9 @@ public:
 						progress(int(i * 100.0 / all.size()));
 					}
 					else {
-						reject(err);
+						if (all[i]->GetState() == State::Rejected) {
+							reject(err);
+						}
 						return;
 					}
 				}
