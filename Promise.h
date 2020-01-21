@@ -396,6 +396,12 @@ protected:
 		}
 	}
 
+	bool IsCanceled() 
+	{
+		std::lock_guard<std::recursive_mutex> lock(m_mutex);
+		return m_state == State::Canceled;
+	}
+
 private:
 	PromiseFunc m_impl;
 	TResult m_result;
@@ -437,7 +443,7 @@ private:
 				[this](const TResult& result) { Resolve(result); },
 				[this](const TError& error) { Reject(error); },
 				[this](int progress) { Progress(progress); },
-				[this]() { return GetState() == State::Canceled; }
+				[this]() { return IsCanceled(); }
 			));
 		}
 
@@ -460,7 +466,7 @@ public:
 			[this](const TResult& result) { Resolve(result); },
 			[this](const TError& error) { Reject(error); },
 			[this](int progress) { Progress(progress); },
-			[this]() { return GetState() == State::Canceled; }
+			[this]() { return IsCanceled(); }
 		);
 	}
 
