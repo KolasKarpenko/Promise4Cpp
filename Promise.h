@@ -207,6 +207,50 @@ public:
 		return ok;
 	}
 
+	bool Result(TResult& result, const OnProgressFunc& progress)
+	{
+		std::condition_variable cv;
+		std::atomic<bool> resolved(false);
+		std::atomic<bool> ok(false);
+
+		size_t resolveIndex = 0;
+		size_t rejectIndex = 0;
+		size_t progressIndex = 0;
+
+		{
+			std::lock_guard<std::recursive_mutex> lock(m_mutex);
+			m_cancelConditionPtr = &cv;
+
+			Then(
+				[&result, &resolved, &ok, &cv](const TResult& value) {
+					result = value;
+					resolved = true;
+					ok = true;
+					cv.notify_one();
+				},
+				[&progress](int p) {
+					progress(p);
+				}
+			);
+
+			resolveIndex = m_resolveHandlers.crbegin()->first;
+			progressIndex = m_progressHandlers.crbegin()->first;
+		}
+
+		std::mutex m;
+		std::unique_lock<std::mutex> lk(m);
+		cv.wait(lk, [&resolved, this] { return resolved == true || GetState() == State::Canceled; });
+
+		{
+			std::lock_guard<std::recursive_mutex> lock(m_mutex);
+			m_cancelConditionPtr = nullptr;
+			m_resolveHandlers.erase(resolveIndex);
+			m_progressHandlers.erase(progressIndex);
+		}
+
+		return ok;
+	}
+
 	bool Result(TResult& result, TError& error)
 	{
 		std::condition_variable cv;
@@ -312,6 +356,10 @@ public:
 		}
 
 		m_state = State::Canceled;
+
+		m_resolveHandlers.clear();
+		m_rejectHandlers.clear();
+		m_progressHandlers.clear();
 
 		PopPool(m_id);
 
