@@ -99,8 +99,6 @@ public:
 
 		switch (m_state)
 		{
-		case State::Pending:
-			break;
 		case State::Resolved:
 			resolve(m_result);
 			break;
@@ -117,8 +115,6 @@ public:
 
 		switch (m_state)
 		{
-		case State::Pending:
-			break;
 		case State::Resolved:
 			progress(100);
 			resolve(m_result);
@@ -136,8 +132,6 @@ public:
 
 		switch (m_state)
 		{
-		case State::Pending:
-			break;
 		case State::Resolved:
 			resolve(m_result);
 			break;
@@ -158,8 +152,6 @@ public:
 
 		switch (m_state)
 		{
-		case State::Pending:
-			break;
 		case State::Resolved:
 			progress(100);
 			resolve(m_result);
@@ -279,10 +271,12 @@ public:
 					result = value;
 					resolved = true;
 					ok = true;
+					cv.notify_one();
 				},
 				[&error, &resolved, &cv](const TError& value) {
 					error = value;
 					resolved = true;
+					cv.notify_one();
 				},
 				[&progress](int p) {
 					progress(p);
