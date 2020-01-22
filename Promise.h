@@ -357,10 +357,6 @@ public:
 
 		m_state = State::Canceled;
 
-		m_resolveHandlers.clear();
-		m_rejectHandlers.clear();
-		m_progressHandlers.clear();
-
 		PopPool(m_id);
 
 		if (m_cancelConditionPtr != nullptr) {
