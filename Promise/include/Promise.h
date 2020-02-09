@@ -178,7 +178,7 @@ public:
 					ok = true;
 					cv.notify_one();
 				},
-				[&resolved, &cv](const TError& /*value*/) {
+				[&resolved, &cv](const TError&) {
 					resolved = true;
 					cv.notify_one();
 				}
@@ -223,6 +223,10 @@ public:
 					ok = true;
 					cv.notify_one();
 				},
+				[&resolved, &cv](const std::string&) {
+					resolved = true;
+					cv.notify_one();
+				}, 
 				[&progress](int p) {
 					progress(p);
 				}
@@ -423,10 +427,6 @@ protected:
 		const IsCanceledFunc& isCanceled
 	) {
 		m_impl(resolve, reject, progress, isCanceled);
-
-		if (GetState() == State::Pending) {
-			Cancel();
-		}
 	}
 
 	bool IsCanceled() 
