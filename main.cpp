@@ -6,12 +6,14 @@ int main()
 {
 	std::cout << "Hello World! main thread id " << std::this_thread::get_id() << std::endl;
 
-	auto async = Promise<std::string>::CreateAsync(
+	PromiseContext promises;
+
+	auto async = promises.CreateAsync<std::string>(
 		[](
-			const Promise<std::string>::OnResolveFunc& resolve,
-			const Promise<std::string>::OnRejectFunc& reject,
-			const Promise<std::string>::OnProgressFunc& progress,
-			const Promise<std::string>::IsCanceledFunc& isCanceled
+			const TPromise<std::string>::OnResolveFunc& resolve,
+			const TPromise<std::string>::OnRejectFunc& reject,
+			const TPromise<std::string>::OnProgressFunc& progress,
+			const TPromise<std::string>::IsCanceledFunc& isCanceled
 		) {
 			for (int i = 0; i < 100; ++i) {
 				if (isCanceled()) {
@@ -41,12 +43,12 @@ int main()
 	std::this_thread::sleep_for(std::chrono::milliseconds(100));
 	async->Cancel();
 
-	auto sync = Promise<std::string>::Create(
+	auto sync = promises.Create<std::string>(
 		[](
-			const Promise<std::string>::OnResolveFunc& resolve,
-			const Promise<std::string>::OnRejectFunc& reject,
-			const Promise<std::string>::OnProgressFunc& progress,
-			const Promise<std::string>::IsCanceledFunc& isCanceled
+			const TPromise<std::string>::OnResolveFunc& resolve,
+			const TPromise<std::string>::OnRejectFunc& reject,
+			const TPromise<std::string>::OnProgressFunc& progress,
+			const TPromise<std::string>::IsCanceledFunc& isCanceled
 		) {
 			//reject("error");
 			resolve("sync resolved");
@@ -62,7 +64,7 @@ int main()
 		}
 	);
 
-	auto all = Promise<std::string>::All({ sync, async });
+	auto all = promises.All<std::string>({ sync, async });
 
 	all->Then(
 		[](const std::vector<std::string>& result) {
@@ -82,5 +84,5 @@ int main()
 		std::cout << "async->Result(res) " << res << std::endl;
 	}
 
-	IPromise::Join();
+	promises.Join();
 }

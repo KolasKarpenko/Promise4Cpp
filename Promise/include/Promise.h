@@ -23,51 +23,17 @@ public:
 	virtual ~IPromise() {}
 	virtual void Reset() = 0;
 
-	State GetState() const {
-		std::lock_guard<std::recursive_mutex> lock(m_mutex);
-		return m_state;
-	}
-
-	static void Join() {
-		std::mutex m;
-		std::unique_lock<std::mutex> lk(m);
-		ms_exitCondition.wait(lk, [] { return ms_pool.empty(); });
-	}
+	State GetState() const;
 
 protected:
-	size_t m_id;
 	State m_state;
 	static size_t ms_handlerId;
 	mutable std::recursive_mutex m_mutex;
 
 	IPromise(): m_state(State::Pending)
 	{
-		static size_t lastId = 0;
-		std::lock_guard<std::mutex> lock(ms_poolMutex);
-		m_id = lastId++;
 	}
 
-	static void PushPool(const std::shared_ptr<IPromise>& ptr)
-	{
-		assert(ptr);
-		std::lock_guard<std::mutex> lock(ms_poolMutex);
-		ms_pool.insert(std::make_pair(ptr->m_id, ptr));
-	}
-
-	static void PopPool(size_t id)
-	{
-		std::lock_guard<std::mutex> lock(ms_poolMutex);
-		ms_pool.erase(id);
-
-		if (ms_pool.empty()) {
-			ms_exitCondition.notify_one();
-		}
-	}
-
-private:
-	static std::mutex ms_poolMutex;
-	static std::map<size_t, std::shared_ptr<IPromise>> ms_pool;
-	static std::condition_variable ms_exitCondition;
 };
 
 template<typename TResult>
@@ -346,7 +312,7 @@ public:
 		return ok;
 	}
 
-	void Cancel()
+	virtual void Cancel()
 	{
 		std::lock_guard<std::recursive_mutex> lock(m_mutex);
 
@@ -355,8 +321,6 @@ public:
 		}
 
 		m_state = State::Canceled;
-
-		PopPool(m_id);
 
 		if (m_cancelConditionPtr != nullptr) {
 			m_cancelConditionPtr->notify_one();
@@ -368,7 +332,7 @@ protected:
 	{
 	}
 
-	void Resolve(const TResult& result)
+	virtual void Resolve(const TResult& result)
 	{
 		std::lock_guard<std::recursive_mutex> lock(m_mutex);
 
@@ -386,11 +350,9 @@ protected:
 		for (const auto& cb : m_resolveHandlers) {
 			cb.second(m_result);
 		}
-
-		PopPool(m_id);
 	}
 
-	void Reject(const TError& error)
+	virtual void Reject(const TError& error)
 	{
 		std::lock_guard<std::recursive_mutex> lock(m_mutex);
 
@@ -403,8 +365,6 @@ protected:
 		for (const auto& cb : m_rejectHandlers) {
 			cb.second(m_error);
 		}
-
-		PopPool(m_id);
 	}
 
 	void Progress(int progress)
@@ -445,14 +405,70 @@ private:
 	std::condition_variable* m_cancelConditionPtr;
 };
 
-template<typename TResult>
-class Promise : public TPromise<TResult>
+class PromiseContext
 {
 private:
-	class Async : public TPromise<TResult>
+	template<typename TResult>
+	class PromiseBase : public TPromise<TResult>
 	{
 	public:
-		Async(const PromiseFunc& impl) : TPromise<TResult>(impl)
+		size_t GetId() const { return m_id; }
+
+		virtual void Cancel() override
+		{
+			TPromise<TResult>::Cancel();
+			m_context.PopPool(m_id);
+		}
+
+	protected:
+		PromiseBase(const PromiseFunc& impl, PromiseContext& context) : TPromise(impl), m_context(context) {
+			std::lock_guard<std::mutex> lock(context.m_poolMutex);
+			static size_t lastId = 0;
+			m_id = lastId++;
+		}
+
+		virtual void Resolve(const TResult& result) override
+		{
+			TPromise<TResult>::Resolve(result);
+			m_context.PopPool(m_id);
+		}
+
+		virtual void Reject(const TError& error) override
+		{
+			TPromise<TResult>::Reject(error);
+			m_context.PopPool(m_id);
+		}
+
+	private:
+		size_t m_id;
+		PromiseContext& m_context;
+	};
+
+	template<typename TResult>
+	class Promise : public PromiseBase<TResult>
+	{
+	public:
+		Promise(const PromiseFunc& impl, PromiseContext& context) : PromiseBase(impl, context)
+		{}
+
+		virtual void Reset() override
+		{
+			m_state = State::Pending;
+
+			Run(
+				[this](const TResult& result) { Resolve(result); },
+				[this](const TError& error) { Reject(error); },
+				[this](int progress) { Progress(progress); },
+				[this]() { return IsCanceled(); }
+			);
+		}
+	};
+
+	template<typename TResult>
+	class AsyncPromise : public PromiseBase<TResult>
+	{
+	public:
+		AsyncPromise(const PromiseFunc& impl, PromiseContext& context) : PromiseBase<TResult>(impl, context)
 		{
 		}
 
@@ -470,92 +486,101 @@ private:
 					const TPromise<TResult>::OnRejectFunc& reject,
 					const TPromise<TResult>::OnProgressFunc& progress,
 					const TPromise<TResult>::IsCanceledFunc& isCanceled
-				) {
-					Run(resolve, reject, progress, isCanceled);
-				},
-				[this](const TResult& result) { Resolve(result); },
-				[this](const TError& error) { Reject(error); },
-				[this](int progress) { Progress(progress); },
-				[this]() { return IsCanceled(); }
-			));
+					) {
+						Run(resolve, reject, progress, isCanceled);
+					},
+					[this](const TResult& result) { Resolve(result); },
+						[this](const TError& error) { Reject(error); },
+						[this](int progress) { Progress(progress); },
+						[this]() { return IsCanceled(); }
+					));
 		}
 
-		~Async()
+		~AsyncPromise()
 		{
 			if (m_threadPtr) {
 				m_threadPtr->join();
 			}
 		}
+
 	private:
 		std::shared_ptr<std::thread> m_threadPtr;
 	};
 
 public:
-	virtual void Reset() override
-	{
-		m_state = State::Pending;
+	void Join();
 
-		Run(
-			[this](const TResult& result) { Resolve(result); },
-			[this](const TError& error) { Reject(error); },
-			[this](int progress) { Progress(progress); },
-			[this]() { return IsCanceled(); }
-		);
-	}
-
-	static PromisePtr Create(const PromiseFunc& impl)
+	template<typename TResult>
+	std::shared_ptr<TPromise<TResult>> Create(const std::function<void(
+		const std::function<void(const TResult & result)> & resolve,
+		const std::function<void(const std::string & error)> & reject,
+		const std::function<void(int progress)> & progress,
+		const std::function<bool()> & isCanceled
+		)>& impl)
 	{
-		Promise<TResult>::PromisePtr ptr(new Promise(impl));
-		PushPool(ptr);
+		Promise<TResult>* p = new Promise<TResult>(impl, *this);
+		std::shared_ptr<Promise<TResult>> ptr(p);
+		PushPool(p->GetId(), ptr);
 		ptr->Reset();
 		return ptr;
 	}
 
-	static PromisePtr CreateAsync(const PromiseFunc& impl)
+	template<typename TResult>
+	std::shared_ptr<TPromise<TResult>> CreateAsync(const std::function<void(
+		const std::function<void(const TResult & result)> & resolve,
+		const std::function<void(const std::string & error)> & reject,
+		const std::function<void(int progress)> & progress,
+		const std::function<bool()>
+		)> & impl)
 	{
-		TPromise<TResult>::PromisePtr ptr(new Async(impl));
-		PushPool(ptr);
+		AsyncPromise<TResult>* p = new AsyncPromise<TResult>(impl, *this);
+		std::shared_ptr<TPromise<TResult>> ptr(p);
+		PushPool(p->GetId(), ptr);
 		ptr->Reset();
 		return ptr;
 	}
 
-	static std::shared_ptr<TPromise<std::vector<TResult>>> All(const std::vector<TPromise<TResult>::PromisePtr>& all)
+	template<typename TResult>
+	std::shared_ptr<TPromise<std::vector<TResult>>>  All(const std::vector<std::shared_ptr<TPromise<TResult>>>& all)
 	{
-		return Promise<std::vector<TResult>>::CreateAsync(
+		return CreateAsync<std::vector<TResult>>(
 			[all](
 				const Promise<std::vector<TResult>>::OnResolveFunc& resolve,
 				const Promise<std::vector<TResult>>::OnRejectFunc& reject,
 				const Promise<std::vector<TResult>>::OnProgressFunc& progress,
 				const Promise<std::string>::IsCanceledFunc& isCanceled
-			) {
-				std::vector<TResult> result(all.size());
-				for (size_t i = 0; i < all.size(); ++i) {
+				) {
+					std::vector<TResult> result(all.size());
+					for (size_t i = 0; i < all.size(); ++i) {
 
-					if (isCanceled()) {
-						return;
-					}
-
-					TResult res;
-					TError err;
-					if (all[i]->Result(res, err)) {
-						result[i] = res;
-						progress(int(i * 100.0 / all.size()));
-					}
-					else {
-						if (all[i]->GetState() == State::Rejected) {
-							reject(err);
+						if (isCanceled()) {
+							return;
 						}
-						return;
-					}
-				}
 
-				resolve(result);
+						TResult res;
+						std::string err;
+						if (all[i]->Result(res, err)) {
+							result[i] = res;
+							progress(int(i * 100.0 / all.size()));
+						}
+						else {
+							if (all[i]->GetState() == IPromise::State::Rejected) {
+								reject(err);
+							}
+							return;
+						}
+					}
+
+					resolve(result);
 			}
 		);
 	}
 
 private:
-	Promise(const PromiseFunc& impl) : TPromise(impl)
-	{}
-};
+	void PushPool(size_t id, const std::shared_ptr<IPromise>& ptr);
+	void PopPool(size_t id);
 
+	std::mutex m_poolMutex;
+	std::map<size_t, std::shared_ptr<IPromise>> m_pool;
+	std::condition_variable m_exitCondition;
+};
