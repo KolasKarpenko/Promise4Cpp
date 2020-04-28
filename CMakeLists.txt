@@ -7,4 +7,9 @@ add_subdirectory(Promise)
 include_directories(${PROMISELIB_INCLUDE})
 
 add_executable(TestApp main.cpp)
-target_link_libraries(TestApp PromiseLib)
+
+if(WIN32)
+	target_link_libraries(TestApp PromiseLib)
+else()
+	target_link_libraries(TestApp PromiseLib pthread)
+endif()

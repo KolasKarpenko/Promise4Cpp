@@ -8,6 +8,7 @@
 #include <mutex>
 #include <thread>
 #include <atomic>
+#include <condition_variable>
 
 class IPromise
 {
@@ -421,7 +422,7 @@ private:
 		}
 
 	protected:
-		PromiseBase(const PromiseFunc& impl, PromiseContext& context) : TPromise(impl), m_context(context) {
+		PromiseBase(const typename TPromise<TResult>::PromiseFunc& impl, PromiseContext& context) : TPromise<TResult>(impl), m_context(context) {
 			std::lock_guard<std::mutex> lock(context.m_poolMutex);
 			static size_t lastId = 0;
 			m_id = lastId++;
@@ -433,7 +434,7 @@ private:
 			m_context.PopPool(m_id);
 		}
 
-		virtual void Reject(const TError& error) override
+		virtual void Reject(const typename TPromise<TResult>::TError& error) override
 		{
 			TPromise<TResult>::Reject(error);
 			m_context.PopPool(m_id);
@@ -448,18 +449,18 @@ private:
 	class Promise : public PromiseBase<TResult>
 	{
 	public:
-		Promise(const PromiseFunc& impl, PromiseContext& context) : PromiseBase(impl, context)
+		Promise(const typename TPromise<TResult>::PromiseFunc& impl, PromiseContext& context) : PromiseBase<TResult>(impl, context)
 		{}
 
 		virtual void Reset() override
 		{
-			m_state = State::Pending;
+			IPromise::m_state = IPromise::State::Pending;
 
-			Run(
-				[this](const TResult& result) { Resolve(result); },
-				[this](const TError& error) { Reject(error); },
-				[this](int progress) { Progress(progress); },
-				[this]() { return IsCanceled(); }
+			TPromise<TResult>::Run(
+				[this](const TResult& result) { PromiseBase<TResult>::Resolve(result); },
+				[this](const typename TPromise<TResult>::TError& error) { PromiseBase<TResult>::Reject(error); },
+				[this](int progress) { PromiseBase<TResult>::Progress(progress); },
+				[this]() { return PromiseBase<TResult>::IsCanceled(); }
 			);
 		}
 	};
@@ -468,7 +469,7 @@ private:
 	class AsyncPromise : public PromiseBase<TResult>
 	{
 	public:
-		AsyncPromise(const PromiseFunc& impl, PromiseContext& context) : PromiseBase<TResult>(impl, context)
+		AsyncPromise(const typename TPromise<TResult>::PromiseFunc& impl, PromiseContext& context) : PromiseBase<TResult>(impl, context)
 		{
 		}
 
@@ -478,21 +479,21 @@ private:
 				m_threadPtr->join();
 			}
 
-			m_state = State::Pending;
+			IPromise::m_state = IPromise::State::Pending;
 
 			m_threadPtr.reset(new std::thread(
 				[this](
-					const TPromise<TResult>::OnResolveFunc& resolve,
-					const TPromise<TResult>::OnRejectFunc& reject,
-					const TPromise<TResult>::OnProgressFunc& progress,
-					const TPromise<TResult>::IsCanceledFunc& isCanceled
+					const typename TPromise<TResult>::OnResolveFunc& resolve,
+					const typename TPromise<TResult>::OnRejectFunc& reject,
+					const typename TPromise<TResult>::OnProgressFunc& progress,
+					const typename TPromise<TResult>::IsCanceledFunc& isCanceled
 					) {
-						Run(resolve, reject, progress, isCanceled);
+						TPromise<TResult>::Run(resolve, reject, progress, isCanceled);
 					},
-					[this](const TResult& result) { Resolve(result); },
-						[this](const TError& error) { Reject(error); },
-						[this](int progress) { Progress(progress); },
-						[this]() { return IsCanceled(); }
+					[this](const TResult& result) { PromiseBase<TResult>::Resolve(result); },
+						[this](const typename TPromise<TResult>::TError& error) { PromiseBase<TResult>::Reject(error); },
+						[this](int progress) { PromiseBase<TResult>::Progress(progress); },
+						[this]() { return PromiseBase<TResult>::IsCanceled(); }
 					));
 		}
 
@@ -545,10 +546,10 @@ public:
 	{
 		return CreateAsync<std::vector<TResult>>(
 			[all](
-				const Promise<std::vector<TResult>>::OnResolveFunc& resolve,
-				const Promise<std::vector<TResult>>::OnRejectFunc& reject,
-				const Promise<std::vector<TResult>>::OnProgressFunc& progress,
-				const Promise<std::string>::IsCanceledFunc& isCanceled
+				const typename Promise<std::vector<TResult>>::OnResolveFunc& resolve,
+				const typename Promise<std::vector<TResult>>::OnRejectFunc& reject,
+				const typename Promise<std::vector<TResult>>::OnProgressFunc& progress,
+				const typename Promise<std::string>::IsCanceledFunc& isCanceled
 				) {
 					std::vector<TResult> result(all.size());
 					for (size_t i = 0; i < all.size(); ++i) {
