@@ -1,6 +1,6 @@
 #include "Promise.h"
 
-size_t IPromise::ms_handlerId;
+size_t IPromise::ms_handlerId = 0;
 
 void PromiseContext::Join()
 {
