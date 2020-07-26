@@ -126,7 +126,7 @@ public:
 		}
 	}
 
-	bool Result(TResult& result)
+	bool Result(TResult& result, uint32_t timeoutMs = 0)
 	{
 		std::condition_variable cv;
 		std::atomic<bool> resolved(false);
@@ -156,9 +156,13 @@ public:
 
 		std::mutex m;
 		std::unique_lock<std::mutex> lk(m);
-		cv.wait(lk, [&resolved, this] { 
-			return resolved == true || GetState() == State::Canceled; 
-		});
+
+		if (timeoutMs > 0) {
+			cv.wait_for(lk, std::chrono::milliseconds(timeoutMs), [&resolved, this] { return resolved == true || GetState() == State::Canceled; });
+		}
+		else {
+			cv.wait(lk, [&resolved, this] { return resolved == true || GetState() == State::Canceled; });
+		}
 
 		{
 			std::lock_guard<std::recursive_mutex> lock(m_mutex);
@@ -169,7 +173,7 @@ public:
 		return ok;
 	}
 
-	bool Result(TResult& result, const OnProgressFunc& progress)
+	bool Result(TResult& result, const OnProgressFunc& progress, uint32_t timeoutMs = 0)
 	{
 		std::condition_variable cv;
 		std::atomic<bool> resolved(false);
@@ -205,7 +209,13 @@ public:
 
 		std::mutex m;
 		std::unique_lock<std::mutex> lk(m);
-		cv.wait(lk, [&resolved, this] { return resolved == true || GetState() == State::Canceled; });
+
+		if (timeoutMs > 0) {
+			cv.wait_for(lk, std::chrono::milliseconds(timeoutMs), [&resolved, this] { return resolved == true || GetState() == State::Canceled; });
+		}
+		else {
+			cv.wait(lk, [&resolved, this] { return resolved == true || GetState() == State::Canceled; });
+		}
 
 		{
 			std::lock_guard<std::recursive_mutex> lock(m_mutex);
@@ -217,7 +227,7 @@ public:
 		return ok;
 	}
 
-	bool Result(TResult& result, TError& error)
+	bool Result(TResult& result, TError& error, uint32_t timeoutMs = 0)
 	{
 		std::condition_variable cv;
 		std::atomic<bool> resolved(false);
@@ -250,7 +260,13 @@ public:
 
 		std::mutex m;
 		std::unique_lock<std::mutex> lk(m);
-		cv.wait(lk, [&resolved, this] { return resolved == true || GetState() == State::Canceled; });
+
+		if (timeoutMs > 0) {
+			cv.wait_for(lk, std::chrono::milliseconds(timeoutMs), [&resolved, this] { return resolved == true || GetState() == State::Canceled; });
+		}
+		else {
+			cv.wait(lk, [&resolved, this] { return resolved == true || GetState() == State::Canceled; });
+		}
 
 		{
 			std::lock_guard<std::recursive_mutex> lock(m_mutex);
@@ -262,7 +278,7 @@ public:
 		return ok;
 	}
 
-	bool Result(TResult& result, TError& error, const OnProgressFunc& progress)
+	bool Result(TResult& result, TError& error, const OnProgressFunc& progress, uint32_t timeoutMs = 0)
 	{
 		std::condition_variable cv;
 		std::atomic<bool> resolved(false);
@@ -300,7 +316,13 @@ public:
 
 		std::mutex m;
 		std::unique_lock<std::mutex> lk(m);
-		cv.wait(lk, [&resolved, this] { return resolved == true || GetState() == State::Canceled; });
+
+		if (timeoutMs > 0) {
+			cv.wait_for(lk, std::chrono::milliseconds(timeoutMs), [&resolved, this] { return resolved == true || GetState() == State::Canceled; });
+		}
+		else {
+			cv.wait(lk, [&resolved, this] { return resolved == true || GetState() == State::Canceled; });
+		}
 
 		{
 			std::lock_guard<std::recursive_mutex> lock(m_mutex);
