@@ -83,6 +83,4 @@ int main()
 	if (async->Result(res)) {
 		std::cout << "async->Result(res) " << res << std::endl;
 	}
-
-	promises.Join();
 }

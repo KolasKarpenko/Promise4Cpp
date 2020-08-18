@@ -531,7 +531,7 @@ private:
 	};
 
 public:
-	void Join();
+	~PromiseContext();
 
 	template<typename TResult>
 	std::shared_ptr<TPromise<TResult>> Create(const std::function<void(
@@ -600,6 +600,7 @@ public:
 	}
 
 private:
+	void Join();
 	void PushPool(size_t id, const std::shared_ptr<IPromise>& ptr);
 	void PopPool(size_t id);
 
