@@ -599,8 +599,9 @@ public:
 		);
 	}
 
-private:
 	void Join();
+
+private:
 	void PushPool(size_t id, const std::shared_ptr<IPromise>& ptr);
 	void PopPool(size_t id);
 
