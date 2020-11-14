@@ -2,11 +2,6 @@
 
 size_t IPromise::ms_handlerId = 0;
 
-PromiseContext::~PromiseContext()
-{
-	Join();
-}
-
 void PromiseContext::Join()
 {
 	std::mutex m;

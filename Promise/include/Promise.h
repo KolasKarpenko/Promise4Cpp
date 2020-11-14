@@ -9,6 +9,7 @@
 #include <thread>
 #include <atomic>
 #include <condition_variable>
+#include <sstream>
 
 class IPromise
 {
@@ -158,10 +159,18 @@ public:
 		std::unique_lock<std::mutex> lk(m);
 
 		if (timeoutMs > 0) {
-			cv.wait_for(lk, std::chrono::milliseconds(timeoutMs), [&resolved, this] { return resolved == true || GetState() == State::Canceled; });
+			cv.wait_for(lk, std::chrono::milliseconds(timeoutMs), [&resolved, this] { 
+				return resolved == true || GetState() == State::Canceled; 
+			});
+
+			if (!ok) {
+				Cancel();
+			}
 		}
 		else {
-			cv.wait(lk, [&resolved, this] { return resolved == true || GetState() == State::Canceled; });
+			cv.wait(lk, [&resolved, this] { 
+				return resolved == true || GetState() == State::Canceled; 
+			});
 		}
 
 		{
@@ -209,14 +218,20 @@ public:
 
 		std::mutex m;
 		std::unique_lock<std::mutex> lk(m);
-
 		if (timeoutMs > 0) {
-			cv.wait_for(lk, std::chrono::milliseconds(timeoutMs), [&resolved, this] { return resolved == true || GetState() == State::Canceled; });
+			cv.wait_for(lk, std::chrono::milliseconds(timeoutMs), [&resolved, this] { 
+				return resolved == true || GetState() == State::Canceled; 
+			});
+
+			if (!ok) {
+				Cancel();
+			}
 		}
 		else {
-			cv.wait(lk, [&resolved, this] { return resolved == true || GetState() == State::Canceled; });
+			cv.wait(lk, [&resolved, this] { 
+				return resolved == true || GetState() == State::Canceled; 
+			});
 		}
-
 		{
 			std::lock_guard<std::recursive_mutex> lock(m_mutex);
 			m_cancelConditionPtr = nullptr;
@@ -260,14 +275,23 @@ public:
 
 		std::mutex m;
 		std::unique_lock<std::mutex> lk(m);
-
 		if (timeoutMs > 0) {
-			cv.wait_for(lk, std::chrono::milliseconds(timeoutMs), [&resolved, this] { return resolved == true || GetState() == State::Canceled; });
+			cv.wait_for(lk, std::chrono::milliseconds(timeoutMs), [&resolved, this] { 
+				return resolved == true || GetState() == State::Canceled; 
+			});
+
+			if (!ok){
+				std::stringstream ss;
+				ss << "Timeout: " << timeoutMs << " msec";
+				error = ss.str();
+				Cancel();
+			}
 		}
 		else {
-			cv.wait(lk, [&resolved, this] { return resolved == true || GetState() == State::Canceled; });
+			cv.wait(lk, [&resolved, this] { 
+				return resolved == true || GetState() == State::Canceled; 
+			});
 		}
-
 		{
 			std::lock_guard<std::recursive_mutex> lock(m_mutex);
 			m_cancelConditionPtr = nullptr;
@@ -316,14 +340,23 @@ public:
 
 		std::mutex m;
 		std::unique_lock<std::mutex> lk(m);
-
 		if (timeoutMs > 0) {
-			cv.wait_for(lk, std::chrono::milliseconds(timeoutMs), [&resolved, this] { return resolved == true || GetState() == State::Canceled; });
+			cv.wait_for(lk, std::chrono::milliseconds(timeoutMs), [&resolved, this] {
+				return resolved == true || GetState() == State::Canceled;
+			});
+
+			if (!ok){
+				std::stringstream ss;
+				ss << "Timeout: " << timeoutMs << " msec";
+				error = ss.str();
+				Cancel();
+			}
 		}
 		else {
-			cv.wait(lk, [&resolved, this] { return resolved == true || GetState() == State::Canceled; });
+			cv.wait(lk, [&resolved, this] { 
+				return resolved == true || GetState() == State::Canceled; 
+			});
 		}
-
 		{
 			std::lock_guard<std::recursive_mutex> lock(m_mutex);
 			m_cancelConditionPtr = nullptr;
@@ -531,7 +564,7 @@ private:
 	};
 
 public:
-	~PromiseContext();
+	void Join();
 
 	template<typename TResult>
 	std::shared_ptr<TPromise<TResult>> Create(const std::function<void(
@@ -598,8 +631,6 @@ public:
 			}
 		);
 	}
-
-	void Join();
 
 private:
 	void PushPool(size_t id, const std::shared_ptr<IPromise>& ptr);
