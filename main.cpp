@@ -8,12 +8,12 @@ int main()
 
 	PromiseContext promises;
 
-	auto async = promises.CreateAsync<std::string>(
+	auto async = promises.CreateAsync<std::string, std::string>(
 		[](
-			const TPromise<std::string>::OnResolveFunc& resolve,
-			const TPromise<std::string>::OnRejectFunc& reject,
-			const TPromise<std::string>::OnProgressFunc& progress,
-			const TPromise<std::string>::IsCanceledFunc& isCanceled
+			const TPromise<std::string, std::string>::OnResolveFunc& resolve,
+			const TPromise<std::string, std::string>::OnRejectFunc& reject,
+			const TPromise<std::string, std::string>::OnProgressFunc& progress,
+			const TPromise<std::string, std::string>::IsCanceledFunc& isCanceled
 		) {
 			for (int i = 0; i < 100; ++i) {
 				if (isCanceled()) {
@@ -43,15 +43,25 @@ int main()
 	std::this_thread::sleep_for(std::chrono::milliseconds(100));
 	async->Cancel();
 
-	auto sync = promises.Create<std::string>(
+	auto sync = promises.Create<std::string, std::string>(
 		[](
-			const TPromise<std::string>::OnResolveFunc& resolve,
-			const TPromise<std::string>::OnRejectFunc& reject,
-			const TPromise<std::string>::OnProgressFunc& progress,
-			const TPromise<std::string>::IsCanceledFunc& isCanceled
+			const TPromise<std::string, std::string>::OnResolveFunc& resolve,
+			const TPromise<std::string, std::string>::OnRejectFunc& reject,
+			const TPromise<std::string, std::string>::OnProgressFunc& progress,
+			const TPromise<std::string, std::string>::IsCanceledFunc& isCanceled
 		) {
-			//reject("error");
 			resolve("sync resolved");
+		}
+	);
+
+	auto rejectedSync = promises.Create<std::string, std::string>(
+		[](
+			const TPromise<std::string, std::string>::OnResolveFunc& resolve,
+			const TPromise<std::string, std::string>::OnRejectFunc& reject,
+			const TPromise<std::string, std::string>::OnProgressFunc& progress,
+			const TPromise<std::string, std::string>::IsCanceledFunc& isCanceled
+			) {
+				reject("error text");
 		}
 	);
 
@@ -64,7 +74,16 @@ int main()
 		}
 	);
 
-	auto all = promises.All<std::string>({ sync, async });
+	rejectedSync->Then(
+		[](const std::string& result) {
+			std::cout << result << " in thread id " << std::this_thread::get_id() << std::endl;
+		},
+		[](const std::string& error) {
+			std::cout << "rejectedSync rejected " << error << std::endl;
+		}
+	);
+
+	auto all = promises.All<std::string, std::string>({ sync, async, rejectedSync});
 
 	all->Then(
 		[](const std::vector<std::string>& result) {

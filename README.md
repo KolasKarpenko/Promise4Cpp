@@ -1,2 +1,2 @@
 # Promise4Cpp
-Promise example
+Lite weight implementation of js-like promises for c++.
