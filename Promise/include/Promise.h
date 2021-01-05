@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <list>
 #include <functional>
 #include <mutex>
 #include <thread>
@@ -46,25 +47,65 @@ template<typename TResult, typename TError>
 class TPromise : public IPromise
 {
 public:
+	typedef std::shared_ptr<TPromise<TResult, TError>> PromisePtr;
 	typedef std::function<void(const TResult& result)> OnResolveFunc;
 	typedef std::function<void(const TError& error)> OnRejectFunc;
 	typedef std::function<void(int progress)> OnProgressFunc;
 	typedef std::function<bool()> IsCanceledFunc;
-	typedef std::function<void(
-		const OnResolveFunc& resolve,
-		const OnRejectFunc& reject,
-		const OnProgressFunc& progress,
-		const IsCanceledFunc& isCanceled
-	)> PromiseFunc;
-	typedef std::shared_ptr<TPromise<TResult, TError>> PromisePtr;
 
-	struct Handlers
+	class Handler
 	{
-		OnResolveFunc resolve;
-		OnRejectFunc reject;
-		OnProgressFunc progress;
+	public:
+		Handler(
+			const OnResolveFunc& resolve,
+			const OnRejectFunc& reject,
+			const OnProgressFunc& progress,
+			const IsCanceledFunc& isCanceled
+		) : m_resolve(resolve), m_reject(reject), m_progress(progress), m_isCanceled(isCanceled), m_isValid(true)
+		{}
+
+		Handler(
+			const OnResolveFunc& resolve,
+			const OnRejectFunc& reject,
+			const OnProgressFunc& progress
+		) : m_resolve(resolve), m_reject(reject), m_progress(progress), m_isValid(true)
+		{}
+
+		void Resolve(const TResult& result) const {
+			if (m_isValid) m_resolve(result);
+		}
+
+		void Reject(const TError& error) const {
+			if (m_isValid) m_reject(error);
+		}
+
+		void Progress(int p) const {
+			if (m_isValid) m_progress(p);
+		}
+
+		bool IsCanceled() const {
+			return m_isValid && m_isCanceled ? m_isCanceled() : true;
+		}
+
+	private:
+		friend class TPromise<TResult, TError>;
+
+		OnResolveFunc m_resolve;
+		OnRejectFunc m_reject;
+		OnProgressFunc m_progress;
+		IsCanceledFunc m_isCanceled;
+		bool m_isValid;
 	};
 
+	virtual ~TPromise() {
+		if (m_handlerPtr) {
+			m_handlerPtr->m_isValid = false;
+		}
+	}
+
+	typedef std::shared_ptr<Handler> HandlerPtr;
+
+	typedef std::function<void(const HandlerPtr&)> PromiseFunc;
 
 	void Then(const OnResolveFunc& resolve, const OnRejectFunc& reject, const OnProgressFunc& progress)
 	{
@@ -72,7 +113,7 @@ public:
 		static size_t handlerId = 0;
 		handlerId++;
 
-		m_handlers.insert(std::make_pair(handlerId, Handlers{ resolve, reject, progress }));
+		m_handlers.insert(std::make_pair(handlerId, Handler(resolve, reject, progress)));
 
 		switch (m_state)
 		{
@@ -148,7 +189,7 @@ public:
 		}
 		else {
 			cv.wait(lk, [&resolved, this] { 
-				return resolved == true || GetState() == State::Canceled; 
+				return resolved == true || GetState() == State::Canceled;
 			});
 		}
 		{
@@ -209,8 +250,8 @@ protected:
 		m_result = result;
 
 		for (const auto& cb : m_handlers) {
-			cb.second.progress(100);
-			cb.second.resolve(m_result);
+			cb.second.Progress(100);
+			cb.second.Resolve(m_result);
 		}
 	}
 
@@ -225,7 +266,7 @@ protected:
 		m_state = State::Rejected;
 		m_error = error;
 		for (const auto& cb : m_handlers) {
-			cb.second.reject(m_error);
+			cb.second.Reject(m_error);
 		}
 	}
 
@@ -238,7 +279,7 @@ protected:
 		}
 
 		for (const auto& cb : m_handlers) {
-			cb.second.progress(progress);
+			cb.second.Progress(progress);
 		}
 	}
 
@@ -248,21 +289,26 @@ protected:
 		const OnProgressFunc& progress,
 		const IsCanceledFunc& isCanceled
 	) {
-		m_impl(resolve, reject, progress, isCanceled);
+		m_handlerPtr.reset(new TPromise<TResult, TError>::Handler(
+			resolve, reject, progress, isCanceled
+		));
+
+		m_impl(m_handlerPtr);
 	}
 
-	bool IsCanceled() 
+	bool IsCanceled()
 	{
 		std::lock_guard<std::recursive_mutex> lock(m_mutex);
 		return m_state == State::Canceled;
 	}
 
 private:
+	HandlerPtr m_handlerPtr;
 	PromiseFunc m_impl;
 	TResult m_result;
 	TError m_error;
 
-	std::map<size_t, Handlers> m_handlers;
+	std::map<size_t, Handler> m_handlers;
 	std::condition_variable* m_cancelConditionPtr;
 };
 
@@ -294,7 +340,7 @@ private:
 			m_context.PopPool(m_id);
 		}
 
-		virtual void Reject(const typename TError& error) override
+		virtual void Reject(const TError& error) override
 		{
 			TPromise<TResult, TError>::Reject(error);
 			m_context.PopPool(m_id);
@@ -318,7 +364,7 @@ private:
 
 			TPromise<TResult, TError>::Run(
 				[this](const TResult& result) { PromiseBase<TResult, TError>::Resolve(result); },
-				[this](const typename TError& error) { PromiseBase<TResult, TError>::Reject(error); },
+				[this](const TError& error) { PromiseBase<TResult, TError>::Reject(error); },
 				[this](int progress) { PromiseBase<TResult, TError>::Progress(progress); },
 				[this]() { return PromiseBase<TResult, TError>::IsCanceled(); }
 			);
@@ -342,24 +388,25 @@ private:
 			IPromise::m_state = IPromise::State::Pending;
 
 			m_threadPtr.reset(new std::thread(
-				[this](
-					const typename TPromise<TResult, TError>::OnResolveFunc& resolve,
-					const typename TPromise<TResult, TError>::OnRejectFunc& reject,
-					const typename TPromise<TResult, TError>::OnProgressFunc& progress,
-					const typename TPromise<TResult, TError>::IsCanceledFunc& isCanceled
+					[this](
+						const typename TPromise<TResult, TError>::OnResolveFunc& resolve,
+						const typename TPromise<TResult, TError>::OnRejectFunc& reject,
+						const typename TPromise<TResult, TError>::OnProgressFunc& progress,
+						const typename TPromise<TResult, TError>::IsCanceledFunc& isCanceled
 					) {
 						TPromise<TResult, TError>::Run(resolve, reject, progress, isCanceled);
-				},
-				[this](const TResult& result) { PromiseBase<TResult, TError>::Resolve(result); },
+					},
+					[this](const TResult& result) { PromiseBase<TResult, TError>::Resolve(result); },
 					[this](const TError& error) { PromiseBase<TResult, TError>::Reject(error); },
 					[this](int progress) { PromiseBase<TResult, TError>::Progress(progress); },
 					[this]() { return PromiseBase<TResult, TError>::IsCanceled(); }
-				));
+				)
+			);
 		}
 
 		~AsyncPromise()
 		{
-			if (m_threadPtr) {
+			if (m_threadPtr && m_threadPtr->joinable()) {
 				m_threadPtr->join();
 			}
 		}
@@ -389,13 +436,19 @@ public:
 		m_exitCondition.wait(lk, [this] { return m_pool.empty(); });
 	}
 
+	~PromiseContext()
+	{
+		Join();
+
+		m_garbageCollectorExit = true;
+		m_garbageCondition.notify_one();
+		if (m_garbageCollectorPtr && m_garbageCollectorPtr->joinable()) {
+			m_garbageCollectorPtr->join();
+		}
+	}
+
 	template<typename TResult, typename TError>
-	std::shared_ptr<TPromise<TResult, TError>> Create(const std::function<void(
-		const std::function<void(const TResult & result)> & resolve,
-		const std::function<void(const TError & error)> & reject,
-		const std::function<void(int progress)> & progress,
-		const std::function<bool()> & isCanceled
-		)>& impl)
+	std::shared_ptr<TPromise<TResult, TError>> Create(const typename TPromise<TResult, TError>::PromiseFunc & impl)
 	{
 		Promise<TResult, TError>* p = new Promise<TResult, TError>(impl, *this);
 		std::shared_ptr<Promise<TResult, TError>> ptr(p);
@@ -405,12 +458,7 @@ public:
 	}
 
 	template<typename TResult, typename TError>
-	std::shared_ptr<TPromise<TResult, TError>> CreateAsync(const std::function<void(
-		const std::function<void(const TResult & result)> & resolve,
-		const std::function<void(const TError & error)> & reject,
-		const std::function<void(int progress)> & progress,
-		const std::function<bool()>
-		)> & impl)
+	std::shared_ptr<TPromise<TResult, TError>> CreateAsync(const typename TPromise<TResult, TError>::PromiseFunc & impl)
 	{
 		AsyncPromise<TResult, TError>* p = new AsyncPromise<TResult, TError>(impl, *this);
 		std::shared_ptr<TPromise<TResult, TError>> ptr(p);
@@ -420,7 +468,7 @@ public:
 	}
 
 	template<typename TResult, typename TError>
-	std::shared_ptr<TPromise<std::vector<TResult>, TError>>  All(const std::vector<std::shared_ptr<TPromise<TResult, TError>>>& all)
+	std::shared_ptr<TPromise<std::vector<TResult>, TError>> All(const std::vector<std::shared_ptr<TPromise<TResult, TError>>>& all)
 	{
 		return CreateAsync<std::vector<TResult>, TError>(
 			[all](
@@ -459,21 +507,65 @@ private:
 	void PushPool(size_t id, const std::shared_ptr<IPromise>& ptr)
 	{
 		assert(ptr);
-		std::lock_guard<std::mutex> lock(m_poolMutex);
-		m_pool.insert(std::make_pair(id, ptr));
+		{
+			std::lock_guard<std::mutex> lock(m_poolMutex);
+			m_pool.insert(std::make_pair(id, ptr));
+		}
+
+		if (!m_garbageCollectorPtr) {
+			m_garbageCollectorExit = false;
+			m_garbageCollectorPtr.reset(new std::thread([this]() {
+				while (true) {
+					std::mutex m;
+					std::unique_lock<std::mutex> lk(m);
+					m_garbageCondition.wait(lk, [this] { return !m_garbageEmpty || m_garbageCollectorExit; });
+
+					if (m_garbageCollectorExit) {
+						break;
+					}
+
+					std::list<size_t> grbg;
+					{
+						std::lock_guard<std::mutex> lock(m_garbageMutex);
+						std::swap(grbg, m_garbage);
+					}
+
+					{
+						std::lock_guard<std::mutex> lock(m_poolMutex);
+
+						for (const auto& id : grbg) {
+							m_pool.erase(id);
+						}
+
+						if (m_pool.empty()) {
+							m_exitCondition.notify_one();
+						}
+					}
+
+					m_garbageEmpty = true;
+				}
+			}));
+		}
 	}
 
 	void PopPool(size_t id)
 	{
-		std::lock_guard<std::mutex> lock(m_poolMutex);
-		m_pool.erase(id);
-
-		if (m_pool.empty()) {
-			m_exitCondition.notify_one();
+		{
+			std::lock_guard<std::mutex> lock(m_garbageMutex);
+			m_garbage.push_back(id);
 		}
+
+		m_garbageEmpty = false;
+		m_garbageCondition.notify_one();
 	}
 
 	std::mutex m_poolMutex;
+	std::mutex m_garbageMutex;
 	std::map<size_t, std::shared_ptr<IPromise>> m_pool;
+	std::list<size_t> m_garbage;
 	std::condition_variable m_exitCondition;
+	std::shared_ptr<std::thread> m_garbageCollectorPtr;
+	std::atomic<bool> m_garbageCollectorExit;
+	std::atomic<bool> m_garbageEmpty;
+	std::condition_variable m_garbageCondition;
 };
